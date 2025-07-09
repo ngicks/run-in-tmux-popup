@@ -2,17 +2,16 @@
 
 Wrappers to call things in tmux popup
 
-## tmux-popup-pinentry-launcher
+## tmux-popup-pinentry-curses
 
-launches pinentry program that takes control over a `tty`, e.g. `pinentry-curses` and `pinentry-tty`, in tmux popup.
+launches pinentry-curses in tmux popup.
 
 build and place executables to somewhere you can look up through `$PATH`.
 
-```go
-$ go build ./cmd/tmux-popup-pinentry-launcher/
-$ go build ./cmd/tmux-popup-pinentry-executor/
+```
+$ go build ./cmd/tmux-popup-pinentry-curses
 # copy to somewhere included in $PATH
-$ mv tmux-popup-pinentry-* ~/.local/bin
+$ mv tmux-popup-pinentry-curses ~/.local/bin
 ```
 
 then make a wrapper script for pinentry caller.
@@ -29,7 +28,7 @@ case "${PINENTRY_USER_DATA-}" in
   exec pinentry-curses "$@"
   ;;
 *TMUX_POPUP*)
-  exec $HOME/.local/bin/tmux-popup-pinentry-launcher pinentry-curses "@"
+  exec $HOME/.local/bin/tmux-popup-pinentry-curses "@"
   ;;
 esac
 
@@ -42,3 +41,11 @@ Then modify `~/.gnupg/gpg-agent.conf` to use the script file:
 pinentry-program /home/ngicks/.local/scripts/pinentry.sh
 ```
 
+### But why?
+
+- Sometimes I ssh into my remote machine from somewhere no GUI is supported
+- Calling pinentry-curses from lazygit called from neovim breakes terminal state.
+
+calling pinentry-curses from tmux popup prevents this breakage.
+
+Happy vibe coding!
