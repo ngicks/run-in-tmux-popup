@@ -28,7 +28,7 @@ case "${PINENTRY_USER_DATA-}" in
   exec pinentry-curses "$@"
   ;;
 *TMUX_POPUP*)
-  exec $HOME/.local/bin/tmux-popup-pinentry-curses "@"
+  exec $HOME/.local/bin/tmux-popup-pinentry-curses "$@"
   ;;
 esac
 
@@ -39,6 +39,20 @@ Then modify `~/.gnupg/gpg-agent.conf` to use the script file:
 
 ```conf
 pinentry-program /home/ngicks/.local/scripts/pinentry.sh
+```
+
+You may also want to place script lines somewhere in your start up script.
+
+```bash
+if [ -t 0 ]; then
+  # Set GPG_TTY so gpg-agent knows where to prompt.  See gpg-agent(1)
+  export GPG_TTY="$(tty)"
+fi
+
+# but in tmux use tmux display-pop and pientry-curses
+if [ -n "${TMUX}" ]; then
+  export PINENTRY_USER_DATA="TMUX_POPUP"
+fi
 ```
 
 ### But why?
