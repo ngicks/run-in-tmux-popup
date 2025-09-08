@@ -2,7 +2,7 @@
 
 Wrappers to call things in tmux popup
 
-## tmux-popup-pinentry-curses
+## {tmux,zellij}-popup-pinentry-curses
 
 launches pinentry-curses in tmux popup.
 
@@ -10,8 +10,19 @@ build and place executables to somewhere you can look up through `$PATH`.
 
 ```
 $ go build ./cmd/tmux-popup-pinentry-curses
+$ go build ./cmd/zellij-popup-pinentry-curses
 # copy to somewhere included in $PATH
-$ mv tmux-popup-pinentry-curses ~/.local/bin
+$ mv *-popup-pinentry-curses ~/.local/bin
+```
+
+Set `$PINENTRY_USER_DATA` in somewhere your shell can load at startup as follow:
+
+```bash
+if [ -n "${TMUX}" ]; then
+  export PINENTRY_USER_DATA="TMUX_POPUP:$(which tmux):${TMUX}"
+elif [ -n "${ZELLIJ}" ]; then
+  export PINENTRY_USER_DATA="ZELLIJ_POPUP:$(which zellij):${ZELLIJ_SESSION_NAME}"
+fi
 ```
 
 then make a wrapper script for pinentry caller.
@@ -30,6 +41,8 @@ case "${PINENTRY_USER_DATA-}" in
 *TMUX_POPUP*)
   exec $HOME/.local/bin/tmux-popup-pinentry-curses "$@"
   ;;
+*ZELLIJ_POPUP*)
+  exec $HOME/.local/bin/zellij-popup-pinentry-curses "$@"
 esac
 
 exec pinentry-qt "$@"
@@ -39,20 +52,6 @@ Then modify `~/.gnupg/gpg-agent.conf` to use the script file:
 
 ```conf
 pinentry-program /home/ngicks/.local/scripts/pinentry.sh
-```
-
-You may also want to place script lines somewhere in your start up script.
-
-```bash
-if [ -t 0 ]; then
-  # Set GPG_TTY so gpg-agent knows where to prompt.  See gpg-agent(1)
-  export GPG_TTY="$(tty)"
-fi
-
-# but in tmux use tmux display-pop and pientry-curses
-if [ -n "${TMUX}" ]; then
-  export PINENTRY_USER_DATA="TMUX_POPUP"
-fi
 ```
 
 ### But why?
