@@ -1,11 +1,9 @@
 package main
 
 import (
+	"cmp"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -45,48 +43,44 @@ func main() {
 		logger = slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}
 
-	// Just little counter measurement for fifo hijack.
-	// Adding random generated prefix and suffix to info
-	// to detect suspicious sender
-	var prefBytes, sufBytes [16]byte
-	_, err = io.ReadFull(rand.Reader, prefBytes[:])
-	if err != nil {
-		panic(err)
+	shellName := cmp.Or(os.Getenv("SHELL"), "bash")
+	zellijPath, sessionName, _ := strings.Cut(
+		strings.TrimPrefix(
+			strings.TrimSpace(
+				os.Getenv("PINENTRY_USER_DATA")),
+			"ZELLIJ_POPUP:",
+		),
+		":",
+	)
+	if len(zellijPath) == 0 || len(sessionName) == 0 {
+		panic(
+			fmt.Errorf(
+				"enviroment variable \"PINENTRY_USER_DATA\" must be"+
+					" formated as \"ZELLIJ_POPUP:zellij_path:session_name\" but is %q",
+				os.Getenv("PINENTRY_USER_DATA"),
+			),
+		)
 	}
-	_, err = io.ReadFull(rand.Reader, sufBytes[:])
-	if err != nil {
-		panic(err)
-	}
-
-	pref := hex.EncodeToString(prefBytes[:])
-	suf := hex.EncodeToString(sufBytes[:])
-
-	// TODO: do samething I've done to zellij version.
 
 	err = popup.CallPinentry(
 		ctx,
 		logger,
 		tempdir,
 		func(ttyFifo, doneFifo string) (cmd string, args []string) {
-			return "tmux", []string{
-				"popup",
-				"-e", "TTY_FIFO_FILE=" + ttyFifo,
-				"-e", "DONE_FIFO_FILE=" + doneFifo,
-				"-e", "SEC_PREFIX=" + pref,
-				"-e", "SEC_SUFFIX=" + suf,
-				"-E", "echo ${SEC_PREFIX}$(tty)${SEC_SUFFIX} >> ${TTY_FIFO_FILE} && read done < ${DONE_FIFO_FILE}",
+			return zellijPath, []string{
+				"--session=" + sessionName,
+				"run",
+				"--floating",
+				"--close-on-exit",
+				"--pinned=true",
+				"--",
+				shellName,
+				"-c",
+				fmt.Sprintf("echo $(tty) >> %s && read done < %s", ttyFifo, doneFifo),
 			}
 		},
 		func(t string) (string, error) {
-			t, ok := strings.CutPrefix(t, pref)
-			if !ok {
-				return "", fmt.Errorf("suspicious sender: incorrect prefix")
-			}
-			targetTty, ok := strings.CutSuffix(t, suf)
-			if !ok {
-				return "", fmt.Errorf("suspicious sender: incorrect suffix")
-			}
-			return targetTty, nil
+			return strings.TrimSpace(t), nil
 		},
 		"/usr/bin/pinentry-curses",
 		os.Args[1:],
