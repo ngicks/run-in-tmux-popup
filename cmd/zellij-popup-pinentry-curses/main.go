@@ -70,6 +70,7 @@ func main() {
 			return zellijPath, []string{
 				"--session=" + sessionName,
 				"run",
+				"--name=pinentry-curses",
 				"--floating",
 				"--close-on-exit",
 				"--pinned=true",
