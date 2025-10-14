@@ -24,6 +24,9 @@ func CallPinentry(
 	pinentryPath string,
 	pinentryArgs []string,
 ) (err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	ttyFifo := filepath.Join(tempdir, "tty")
 	doneFifo := filepath.Join(tempdir, "done")
 
@@ -46,16 +49,18 @@ func CallPinentry(
 	popupCmd.Cancel = func() error {
 		return popupCmd.Process.Signal(syscall.SIGTERM)
 	}
-	go func() {
-		<-ctx.Done()
-		popupCmd.Process.Kill()
-	}()
 
 	logger.Debug("popup starting")
 	err = popupCmd.Start()
 	if err != nil {
 		return fmt.Errorf("popup failed: %w", err)
 	}
+
+	go func() {
+		<-ctx.Done()
+		popupCmd.Process.Kill()
+	}()
+
 	defer func() {
 		logger.Debug("waiting to done fifo")
 		done, err := os.OpenFile(doneFifo, os.O_RDWR, 0)
@@ -116,6 +121,11 @@ func CallPinentry(
 	if err != nil {
 		return fmt.Errorf("%s failed to start: %w", pinentryPath, err)
 	}
+
+	go func() {
+		<-ctx.Done()
+		cmd.Process.Kill()
+	}()
 
 	logger.Debug("pinentry-curses started")
 
