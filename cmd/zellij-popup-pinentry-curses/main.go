@@ -47,7 +47,8 @@ func main() {
 	zellijPath, sessionName, _ := strings.Cut(
 		strings.TrimPrefix(
 			strings.TrimSpace(
-				os.Getenv("PINENTRY_USER_DATA")),
+				os.Getenv("PINENTRY_USER_DATA"),
+			),
 			"ZELLIJ_POPUP:",
 		),
 		":",
