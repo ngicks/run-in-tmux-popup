@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -47,7 +48,7 @@ func CallPinentry(
 		popupCmdPath, popupArgs...,
 	)
 	popupCmd.Cancel = func() error {
-		return popupCmd.Process.Signal(syscall.SIGTERM)
+		return popupCmd.Process.Signal(syscall.SIGINT)
 	}
 
 	logger.Debug("popup starting")
@@ -106,7 +107,7 @@ func CallPinentry(
 	// Run pinentry-curses with stdin interception
 	cmd := exec.CommandContext(ctx, pinentryPath, pinentryArgs...)
 	cmd.Cancel = func() error {
-		return cmd.Process.Signal(syscall.SIGTERM)
+		return cmd.Process.Signal(syscall.SIGINT)
 	}
 
 	p, err := cmd.StdinPipe()
@@ -129,14 +130,26 @@ func CallPinentry(
 
 	logger.Debug("pinentry-curses started")
 
-	// Intercept stdin and replace ttyname
+	r, w, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+
 	var wg sync.WaitGroup
+
+	go func() {
+		// don't wait on this gorountine.
+		// I'm not sure but closing os.Stdin doesn't have
+		// effect to unblock reading on it.
+		io.Copy(w, os.Stdin)
+		logger.Debug("piping done")
+	}()
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer p.Close()
 
-		scanner := bufio.NewScanner(os.Stdin)
+		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
 			line := scanner.Text()
 
@@ -154,7 +167,10 @@ func CallPinentry(
 				logger.Warn("write error", slog.Any("err", err))
 				break
 			}
+			logger.Debug("written")
 		}
+
+		logger.Debug("loop exited")
 
 		if err := scanner.Err(); err != nil {
 			logger.Warn("scanner error", slog.Any("err", err))
@@ -171,11 +187,20 @@ func CallPinentry(
 
 	logger.Debug("pinentry-curses finished", slog.Any("err", err))
 
-	os.Stdin.Close()
+	logger.Debug(
+		"pipe closed",
+		slog.Any("w_err", w.Close()),
+		slog.Any("r_err", r.Close()),
+	)
+	logger.Debug(
+		"stdin closed",
+		slog.Any("err", os.Stdin.Close()),
+	)
 
 	wg.Wait()
 
 	if err != nil {
+		logger.Debug("done with error")
 		return fmt.Errorf("pinentry-curses failed: %w", err)
 	}
 

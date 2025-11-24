@@ -23,7 +23,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM, syscall.SIGABRT)
 	defer stop()
 
-	tempdir, err := os.MkdirTemp("", "")
+	tempdir, err := os.MkdirTemp("", "tmux-popup-pinentry-curses-*")
 	if err != nil {
 		panic(err)
 	}

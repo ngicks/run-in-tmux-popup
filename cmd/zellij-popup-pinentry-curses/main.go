@@ -18,10 +18,8 @@ import (
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM, syscall.SIGABRT)
-	defer stop()
 
-	tempdir, err := os.MkdirTemp("", "")
+	tempdir, err := os.MkdirTemp("", "zellij-popup-pinentry-curses-*")
 	if err != nil {
 		panic(err)
 	}
@@ -42,6 +40,25 @@ func main() {
 
 		logger = slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}
+
+	sigCh := make(chan os.Signal, 10)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGABRT)
+	go func() {
+		select {
+		case <-ctx.Done():
+			logger.Debug(
+				"context canceled",
+				slog.Any("err", ctx.Err()),
+				slog.Any("cause", context.Cause(ctx)),
+			)
+		case sig := <-sigCh:
+			cancel()
+			logger.Debug(
+				"signal received",
+				slog.String("signal", sig.String()),
+			)
+		}
+	}()
 
 	shellName := cmp.Or(os.Getenv("SHELL"), "bash")
 	zellijPath, sessionName, _ := strings.Cut(
