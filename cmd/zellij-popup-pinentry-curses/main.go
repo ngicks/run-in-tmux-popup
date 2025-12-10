@@ -18,6 +18,7 @@ func main() {
 		shellName,
 		path,
 		session,
+		_,
 		deferFunc := preprocess.Do("tmux")
 	defer deferFunc()
 

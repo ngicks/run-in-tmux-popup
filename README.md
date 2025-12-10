@@ -19,7 +19,7 @@ Set `$PINENTRY_USER_DATA` in somewhere your shell can load at startup as follow:
 
 ```bash
 if [ -n "${TMUX}" ]; then
-  export PINENTRY_USER_DATA="TMUX_POPUP:$(which tmux):${TMUX}"
+  export PINENTRY_USER_DATA="TMUX_POPUP:$(which tmux):$(tmux display -p '#{client_tty}'):${TMUX_PANE}"
 elif [ -n "${ZELLIJ}" ]; then
   export PINENTRY_USER_DATA="ZELLIJ_POPUP:$(which zellij):${ZELLIJ_SESSION_NAME}"
 fi

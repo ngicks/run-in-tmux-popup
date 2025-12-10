@@ -22,6 +22,7 @@ func Do(name string) (
 	shellName string,
 	path string,
 	session string,
+	rest string,
 	deferFunc func(),
 ) {
 	var err error
@@ -86,15 +87,16 @@ func Do(name string) (
 	}()
 
 	shellName = cmp.Or(os.Getenv("SHELL"), "bash")
-	path, session, _ = strings.Cut(
-		strings.TrimPrefix(
-			strings.TrimSpace(
-				os.Getenv("PINENTRY_USER_DATA"),
-			),
-			strings.ToUpper(name)+"_POPUP:",
+
+	pinentryUserData := strings.TrimPrefix(
+		strings.TrimSpace(
+			os.Getenv("PINENTRY_USER_DATA"),
 		),
-		":",
+		strings.ToUpper(name)+"_POPUP:",
 	)
+	path, session, _ = strings.Cut(pinentryUserData, ":")
+	session, rest, _ = strings.Cut(session, ":")
+
 	if len(path) == 0 || len(session) == 0 {
 		panic(
 			fmt.Errorf(
