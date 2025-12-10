@@ -1,49 +1,30 @@
 package main
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
-	"os/signal"
-	"path/filepath"
 	"strings"
-	"syscall"
-	"time"
 
+	"github.com/ngicks/run-in-tmux-popup/cmd/internal/preprocess"
 	"github.com/ngicks/run-in-tmux-popup/internal/popup"
 )
 
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	var err error
+	ctx,
+		cancel,
+		logger,
+		tempdir,
+		_,
+		path,
+		_,
+		deferFunc := preprocess.Do("tmux")
+	defer deferFunc()
+
 	defer cancel()
-	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM, syscall.SIGABRT)
-	defer stop()
-
-	tempdir, err := os.MkdirTemp("", "tmux-popup-pinentry-curses-*")
-	if err != nil {
-		panic(err)
-	}
-	defer func() {
-		_ = os.RemoveAll(tempdir)
-	}()
-
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if os.Getenv("TMUX_POPUP_DEBUG") == "1" {
-		logFile, err := os.OpenFile(
-			filepath.Join(tempdir, "log.txt"),
-			os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o700,
-		)
-		if err != nil {
-			panic(err)
-		}
-		defer logFile.Close()
-
-		logger = slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	}
 
 	// Just little counter measurement for fifo hijack.
 	// Adding random generated prefix and suffix to info
@@ -61,14 +42,12 @@ func main() {
 	pref := hex.EncodeToString(prefBytes[:])
 	suf := hex.EncodeToString(sufBytes[:])
 
-	// TODO: do samething I've done to zellij version.
-
 	err = popup.CallPinentry(
 		ctx,
 		logger,
 		tempdir,
 		func(ttyFifo, doneFifo string) (cmd string, args []string) {
-			return "tmux", []string{
+			return path, []string{
 				"popup",
 				"-e", "TTY_FIFO_FILE=" + ttyFifo,
 				"-e", "DONE_FIFO_FILE=" + doneFifo,
