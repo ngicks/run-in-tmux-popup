@@ -19,9 +19,7 @@ func main() {
 		logger,
 		tempdir,
 		_,
-		path,
-		_,
-		_,
+		p,
 		deferFunc := preprocess.Do("tmux")
 	defer deferFunc()
 
@@ -48,8 +46,9 @@ func main() {
 		logger,
 		tempdir,
 		func(ttyFifo, doneFifo string) (cmd string, args []string) {
-			return path, []string{
+			return p.Path, []string{
 				"popup",
+				"-c", p.ClientId,
 				"-e", "TTY_FIFO_FILE=" + ttyFifo,
 				"-e", "DONE_FIFO_FILE=" + doneFifo,
 				"-e", "SEC_PREFIX=" + pref,

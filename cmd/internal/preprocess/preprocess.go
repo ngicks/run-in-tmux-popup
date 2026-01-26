@@ -14,15 +14,45 @@ import (
 	"time"
 )
 
+func ParsePinentryUserData(pinentryUserData string) PinentryUserData {
+	if pinentryUserData == "" {
+		pinentryUserData = strings.TrimSpace(os.Getenv("PINENTRY_USER_DATA"))
+	}
+	var p PinentryUserData
+	s := strings.Split(pinentryUserData, ":")
+	if len(s) > 0 {
+		p.Kind = s[0]
+	}
+	if len(s) > 1 {
+		p.Path = s[1]
+	}
+	if len(s) > 2 {
+		p.SessionId = s[2]
+	}
+	if len(s) > 3 {
+		p.ClientId = s[3]
+	}
+	if len(s) > 4 {
+		p.Rest = s[4:]
+	}
+	return p
+}
+
+type PinentryUserData struct {
+	Kind      string
+	Path      string
+	SessionId string
+	ClientId  string
+	Rest      []string
+}
+
 func Do(name string) (
 	ctx context.Context,
 	cancel func(),
 	logger *slog.Logger,
 	tempdir string,
 	shellName string,
-	path string,
-	session string,
-	rest string,
+	pinentryUserData PinentryUserData,
 	deferFunc func(),
 ) {
 	var err error
@@ -88,20 +118,12 @@ func Do(name string) (
 
 	shellName = cmp.Or(os.Getenv("SHELL"), "bash")
 
-	pinentryUserData := strings.TrimPrefix(
-		strings.TrimSpace(
-			os.Getenv("PINENTRY_USER_DATA"),
-		),
-		strings.ToUpper(name)+"_POPUP:",
-	)
-	path, session, _ = strings.Cut(pinentryUserData, ":")
-	session, rest, _ = strings.Cut(session, ":")
-
-	if len(path) == 0 || len(session) == 0 {
+	pinentryUserData = ParsePinentryUserData("")
+	if len(pinentryUserData.Path) == 0 || len(pinentryUserData.SessionId) == 0 {
 		panic(
 			fmt.Errorf(
 				"enviroment variable \"PINENTRY_USER_DATA\" must be"+
-					" formated as \"%s_POPUP:%s_path:session_name\" but is %q",
+					" formated as \"%s_POPUP:%s_path:session_id:client_id\" but is %q",
 				strings.ToUpper(name),
 				name,
 				os.Getenv("PINENTRY_USER_DATA"),

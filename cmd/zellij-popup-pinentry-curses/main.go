@@ -16,9 +16,7 @@ func main() {
 		logger,
 		tempdir,
 		shellName,
-		path,
-		session,
-		_,
+		p,
 		deferFunc := preprocess.Do("tmux")
 	defer deferFunc()
 
@@ -29,8 +27,8 @@ func main() {
 		logger,
 		tempdir,
 		func(ttyFifo, doneFifo string) (cmd string, args []string) {
-			return path, []string{
-				"--session=" + session,
+			return p.Path, []string{
+				"--session=" + p.SessionId,
 				"run",
 				"--name=pinentry-curses",
 				"--floating",
