@@ -14,6 +14,15 @@ import (
 	"time"
 )
 
+type PinentryUserData struct {
+	Kind        string
+	Path        string
+	SessionId   string
+	ClientId    string
+	SessionMeta string
+	Rest        []string
+}
+
 func ParsePinentryUserData(pinentryUserData string) PinentryUserData {
 	if pinentryUserData == "" {
 		pinentryUserData = strings.TrimSpace(os.Getenv("PINENTRY_USER_DATA"))
@@ -33,17 +42,12 @@ func ParsePinentryUserData(pinentryUserData string) PinentryUserData {
 		p.ClientId = s[3]
 	}
 	if len(s) > 4 {
-		p.Rest = s[4:]
+		p.SessionMeta = s[4]
+	}
+	if len(s) > 5 {
+		p.Rest = s[5:]
 	}
 	return p
-}
-
-type PinentryUserData struct {
-	Kind      string
-	Path      string
-	SessionId string
-	ClientId  string
-	Rest      []string
 }
 
 func Do(name string) (
@@ -58,6 +62,21 @@ func Do(name string) (
 	var err error
 	var stack []func()
 
+	pinentryUserData = ParsePinentryUserData("")
+	if len(pinentryUserData.Path) == 0 || len(pinentryUserData.SessionId) == 0 {
+		panic(
+			fmt.Errorf(
+				"enviroment variable \"PINENTRY_USER_DATA\" must be"+
+					" formated as \"%s_POPUP:%s_path:session_id:client_id\" but is %q",
+				strings.ToUpper(name),
+				name,
+				os.Getenv("PINENTRY_USER_DATA"),
+			),
+		)
+	}
+
+	debugMode := strings.HasSuffix(pinentryUserData.Kind, "_DEBUG") || os.Getenv("TMUX_POPUP_DEBUG") == "1"
+
 	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Minute)
 	stack = append(stack, cancel)
 
@@ -65,15 +84,17 @@ func Do(name string) (
 	if err != nil {
 		panic(err)
 	}
-	stack = append(
-		stack,
-		func() {
-			_ = os.RemoveAll(tempdir)
-		},
-	)
+	if !debugMode {
+		stack = append(
+			stack,
+			func() {
+				_ = os.RemoveAll(tempdir)
+			},
+		)
+	}
 
 	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if os.Getenv("TMUX_POPUP_DEBUG") == "1" {
+	if debugMode {
 		logFile, err := os.OpenFile(
 			filepath.Join(tempdir, "log.txt"),
 			os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o700,
@@ -90,6 +111,8 @@ func Do(name string) (
 
 		logger = slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}
+
+	logger.Info("PINENTRY_USER_DATA", slog.Any("data", pinentryUserData))
 
 	sigCh := make(chan os.Signal, 10)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGABRT)
@@ -117,19 +140,6 @@ func Do(name string) (
 	}()
 
 	shellName = cmp.Or(os.Getenv("SHELL"), "bash")
-
-	pinentryUserData = ParsePinentryUserData("")
-	if len(pinentryUserData.Path) == 0 || len(pinentryUserData.SessionId) == 0 {
-		panic(
-			fmt.Errorf(
-				"enviroment variable \"PINENTRY_USER_DATA\" must be"+
-					" formated as \"%s_POPUP:%s_path:session_id:client_id\" but is %q",
-				strings.ToUpper(name),
-				name,
-				os.Getenv("PINENTRY_USER_DATA"),
-			),
-		)
-	}
 
 	deferFunc = func() {
 		for _, f := range slices.Backward(stack) {

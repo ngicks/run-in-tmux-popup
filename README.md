@@ -19,7 +19,7 @@ Set `$PINENTRY_USER_DATA` in somewhere your shell can load at startup as follow:
 
 ```bash
 if [ -n "${TMUX}" ]; then
-  export PINENTRY_USER_DATA="TMUX_POPUP:$(which tmux):$(tmux display -p '#S}'):$(tmux display -p '#{client_tty}')"
+  export PINENTRY_USER_DATA="TMUX_POPUP:$(which tmux):$(tmux display -p '#S}'):$(tmux display -p '#{client_tty}'):${TMUX}"
 elif [ -n "${ZELLIJ}" ]; then
   export PINENTRY_USER_DATA="ZELLIJ_POPUP:$(which zellij):${ZELLIJ_SESSION_NAME}:"
 fi
@@ -28,7 +28,7 @@ fi
 It should be formatted as
 
 ```
-(NAME_OF_HOST_PROGRAM):(path/to/bin):(session_id):(client_id)
+(NAME_OF_HOST_PROGRAM):(path/to/bin):(session_id):(client_id):(session_meta)
 ```
 
 Unfortunatelly current `zellij` does not have means to specify a client id to which display should be popped up.

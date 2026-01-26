@@ -23,6 +23,12 @@ func main() {
 		deferFunc := preprocess.Do("tmux")
 	defer deferFunc()
 
+	if !strings.Contains(p.SessionMeta, ",") {
+		panic(fmt.Errorf("session meta is malformed: it must be something like \"/run/user/1000/tmux-1000/default,111,0\""))
+	}
+
+	os.Setenv("TMUX", p.SessionMeta)
+
 	defer cancel()
 
 	// Just little counter measurement for fifo hijack.

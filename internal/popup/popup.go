@@ -2,6 +2,7 @@ package popup
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -42,6 +43,8 @@ func CallPinentry(
 
 	popupCmdPath, popupArgs := buildPopUpCmd(ttyFifo, doneFifo)
 
+	logger.Debug("popup cmd", slog.String("path", popupCmdPath), slog.Any("args", popupArgs))
+
 	// Launch tmux popup in background
 	popupCmd := exec.CommandContext(
 		ctx,
@@ -50,8 +53,11 @@ func CallPinentry(
 	popupCmd.Cancel = func() error {
 		return popupCmd.Process.Signal(syscall.SIGINT)
 	}
+	popupCmdStdout := new(bytes.Buffer)
+	popupCmd.Stdout = popupCmdStdout
+	popupCmdStderr := new(bytes.Buffer)
+	popupCmd.Stderr = popupCmdStderr
 
-	logger.Debug("popup starting")
 	err = popupCmd.Start()
 	if err != nil {
 		return fmt.Errorf("popup failed: %w", err)
@@ -60,6 +66,11 @@ func CallPinentry(
 	go func() {
 		<-ctx.Done()
 		popupCmd.Process.Kill()
+		logger.Debug(
+			"popup cmd out:",
+			slog.String("stdout", popupCmdStdout.String()),
+			slog.String("stderr", popupCmdStderr.String()),
+		)
 	}()
 
 	defer func() {
