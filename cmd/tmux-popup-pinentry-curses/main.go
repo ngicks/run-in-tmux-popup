@@ -27,7 +27,11 @@ func main() {
 		panic(fmt.Errorf("session meta is malformed: it must be something like \"/run/user/1000/tmux-1000/default,111,0\""))
 	}
 
-	os.Setenv("TMUX", p.SessionMeta)
+	// popup does not appear without $TMUX.
+	// Do not ask me why.
+	if os.Getenv("TMUX") == "" {
+		os.Setenv("TMUX", p.SessionMeta)
+	}
 
 	defer cancel()
 
