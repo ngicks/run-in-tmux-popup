@@ -24,6 +24,9 @@ func Usage() {
 	fmt.Fprintf(os.Stderr, "  -p, --prompt        Custom text to display at the top\n")
 	fmt.Fprintf(os.Stderr, "      --callback      Shell command template using Go text/template format\n")
 	fmt.Fprintf(os.Stderr, "  -s, --shell         Shell to execute callback (default: $SHELL or /bin/sh)\n")
+	fmt.Fprintf(os.Stderr, "      --tmux[=OPTS]   Run in tmux popup [center|top|bottom|left|right][,WIDTH[%%]][,HEIGHT[%%]]\n")
+	fmt.Fprintf(os.Stderr, "      --zellij[=OPTS] Run in zellij floating pane (not yet implemented)\n")
+	fmt.Fprintf(os.Stderr, "      --no-popup      Disable popup even if --tmux/--zellij is set\n")
 	fmt.Fprintf(os.Stderr, "\nItem JSON format: [{\"id\": \"...\", \"cmd\": \"...\"}]\n")
 	fmt.Fprintf(os.Stderr, "Callback template fields: {{.Id}}, {{.Cmd}}\n")
 }
@@ -35,6 +38,10 @@ type Option struct {
 	Prompt      string
 	Callback    string
 	Shell       string
+	Tmux        string
+	Zellij      string
+	NoPopup     bool
+	ResultFifo  string
 }
 
 func (o *Option) Parse(fs *flag.FlagSet, args []string) {
@@ -45,6 +52,25 @@ func (o *Option) Parse(fs *flag.FlagSet, args []string) {
 	fs.StringVar(&o.Prompt, "prompt", "select input", "Custom text to display at the top")
 	fs.StringVar(&o.Callback, "callback", "", "Shell command template using Go text/template format")
 	fs.StringVar(&o.Shell, "shell", "", "Shell to execute callback")
+
+	fs.BoolFunc("tmux", "Run in tmux popup [pos][,W%][,H%]", func(s string) error {
+		if s == "true" {
+			o.Tmux = "default"
+		} else {
+			o.Tmux = s
+		}
+		return nil
+	})
+	fs.BoolFunc("zellij", "Run in zellij floating pane [W%][,H%]", func(s string) error {
+		if s == "true" {
+			o.Zellij = "default"
+		} else {
+			o.Zellij = s
+		}
+		return nil
+	})
+	fs.BoolVar(&o.NoPopup, "no-popup", false, "Disable popup even if --tmux/--zellij is set")
+	fs.StringVar(&o.ResultFifo, "result-fifo", "", "")
 
 	var choicesFileShort, choicesShort, promptShort, shellShort string
 	fs.StringVar(&choicesFileShort, "f", "", "Path to JSON file containing items (shorthand)")

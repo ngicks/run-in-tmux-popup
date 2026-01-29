@@ -1,17 +1,39 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 	pickflag "github.com/ngicks/run-in-tmux-popup/cmd/pickentry/flag"
+	"github.com/ngicks/run-in-tmux-popup/cmd/pickentry/popup"
 	"github.com/ngicks/run-in-tmux-popup/internal/pickentry"
 )
 
 func main() {
 	pickflag.Parse()
 	gf := pickflag.GlobalOption
+
+	// Popup dispatch
+	if !gf.NoPopup {
+		if gf.Tmux != "" {
+			selected, err := popup.RunInTmuxPopup(popup.ParseTmuxOpts(gf.Tmux), gf)
+			if err != nil {
+				if errors.Is(err, popup.ErrCanceled) {
+					os.Exit(1)
+				}
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			handleResult(selected, gf)
+			return
+		}
+		if gf.Zellij != "" {
+			fmt.Fprintf(os.Stderr, "Error: --zellij is not yet implemented\n")
+			os.Exit(1)
+		}
+	}
 
 	// Load items
 	var items pickentry.Items
@@ -53,10 +75,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Execute callback or print cmd
+	// If --result-fifo is set, write result to FIFO instead of normal output
+	if gf.ResultFifo != "" {
+		if err := popup.WriteResultToFifo(gf.ResultFifo, *m.Selected); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing result to FIFO: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	handleResult(m.Selected, gf)
+}
+
+// handleResult executes the callback or prints the command to stdout.
+func handleResult(selected *pickentry.Item, gf pickflag.Option) {
 	if gf.Callback != "" {
 		// Render template
-		rendered, err := pickentry.RenderCallback(gf.Callback, *m.Selected)
+		rendered, err := pickentry.RenderCallback(gf.Callback, *selected)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error rendering callback: %v\n", err)
 			os.Exit(1)
@@ -70,6 +105,6 @@ func main() {
 		}
 	} else {
 		// Print cmd to stdout
-		fmt.Println(m.Selected.Cmd)
+		fmt.Println(selected.Cmd)
 	}
 }
