@@ -1,0 +1,19 @@
+name: run-in-tmux-popup 
+version: 1.0.0
+description: APM project for run-in-tmux-popup
+author: ngicks
+dependencies:
+  apm:
+  - github.com/ngicks/agents-package/apm-package/cc-workers
+  - ngicks/agents-package/hooks/go-vet-ngcheckers
+  - ngicks/agents-package/hooks/golangci-lint-fmt-after-edit
+  - ngicks/agents-package/hooks/golangci-lint-run-after-edit
+  - ngicks/agents-package/instructions/base-env.instructions.md
+  - ngicks/agents-package/instructions/go/go-basics.instructions.md
+  - ngicks/agents-package/instructions/go/go-design-preference.instructions.md
+  - ngicks/agents-package/skills/go-edit-cobra
+  - ngicks/agents-package/skills/go-check-outdated-patterns
+  - ngicks/agents-package/skills/go-review-checklist
+  - ngicks/agents-package/skills/ngplan
+  mcp: []
+scripts: {}

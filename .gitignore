@@ -1,3 +1,6 @@
+/tmux-popup-pinentry-curses
+/zellij-popup-pinentry-curses
+
 # If you prefer the allow list template instead of the deny list, see community template:
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
 #
@@ -30,8 +33,24 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
-.serena
-.claude
-/tmux-popup-pinentry-curses
-/zellij-popup-pinentry-curses
-/pickentry
+
+
+# APM dependencies
+apm_modules/
+
+/.agents
+/.claude
+/.codex
+/.github/instructions
+/.github/skills
+
+/bin
+/cmdman
+
+/CLAUDE_*.md
+/CODEX_*.md
+
+CLAUDE.md
+AGENTS.md
+
+.$*.bkp
