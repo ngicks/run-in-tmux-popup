@@ -1,86 +1,76 @@
+// Command tmux-popup-pinentry-curses proxies a pinentry prompt into a tmux
+// display-popup.
+//
+// Deprecated: use "run-in-popup pinentry --backend tmux-popup". This binary
+// stays as a thin shim over runinpopup so existing gpg-agent wrapper
+// scripts keep working.
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"context"
 	"fmt"
-	"io"
+	"log/slog"
 	"os"
-	"strings"
+	"os/signal"
+	"syscall"
 
-	"github.com/ngicks/run-in-tmux-popup/cmd/internal/preprocess"
-	"github.com/ngicks/run-in-tmux-popup/internal/popup"
+	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
+	"github.com/ngicks/run-in-tmux-popup/runinpopup"
 )
 
+const deprecationNotice = "tmux-popup-pinentry-curses is deprecated;" +
+	` run "run-in-popup pinentry --backend tmux-popup" instead.`
+
 func main() {
-	var err error
-	ctx,
-		cancel,
-		logger,
-		tempdir,
-		_,
-		p,
-		deferFunc := preprocess.Do("tmux")
-	defer deferFunc()
+	// stderr only: stdout carries the Assuan exchange with gpg-agent, and any
+	// stray byte there breaks the protocol.
+	fmt.Fprintln(os.Stderr, deprecationNotice)
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
 
-	if !strings.Contains(p.SessionMeta, ",") {
-		panic(fmt.Errorf("session meta is malformed: it must be something like \"/run/user/1000/tmux-1000/default,111,0\""))
+func run() error {
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		syscall.SIGINT, syscall.SIGTERM, syscall.SIGABRT,
+	)
+	defer stop()
+
+	userData := runinpopup.ParsePinentryUserData(os.Getenv("PINENTRY_USER_DATA"))
+	if userData.Path == "" || userData.SessionId == "" {
+		return fmt.Errorf(
+			"environment variable %q must be formatted as"+
+				" \"TMUX_POPUP:tmux_path:session_id:client_id\" but is %q",
+			"PINENTRY_USER_DATA", os.Getenv("PINENTRY_USER_DATA"),
+		)
 	}
 
-	// popup does not appear without $TMUX.
-	// Do not ask me why.
-	if os.Getenv("TMUX") == "" {
-		os.Setenv("TMUX", p.SessionMeta)
-	}
-
-	defer cancel()
-
-	// Just little counter measurement for fifo hijack.
-	// Adding random generated prefix and suffix to info
-	// to detect suspicious sender
-	var prefBytes, sufBytes [16]byte
-	_, err = io.ReadFull(rand.Reader, prefBytes[:])
+	backend, err := runinpopup.NewTmuxPopupBackend(runinpopup.BackendOptions{
+		BinaryPath:  userData.Path,
+		ClientId:    userData.ClientId,
+		SessionMeta: userData.SessionMeta,
+		TMUX:        os.Getenv("TMUX"),
+	})
 	if err != nil {
-		panic(err)
-	}
-	_, err = io.ReadFull(rand.Reader, sufBytes[:])
-	if err != nil {
-		panic(err)
+		return err
 	}
 
-	pref := hex.EncodeToString(prefBytes[:])
-	suf := hex.EncodeToString(sufBytes[:])
-
-	err = popup.CallPinentry(
-		ctx,
-		logger,
-		tempdir,
-		func(ttyFifo, doneFifo string) (cmd string, args []string) {
-			return p.Path, []string{
-				"popup",
-				"-c", p.ClientId,
-				"-e", "TTY_FIFO_FILE=" + ttyFifo,
-				"-e", "DONE_FIFO_FILE=" + doneFifo,
-				"-e", "SEC_PREFIX=" + pref,
-				"-e", "SEC_SUFFIX=" + suf,
-				"-E", "echo ${SEC_PREFIX}$(tty)${SEC_SUFFIX} >> ${TTY_FIFO_FILE} && read done < ${DONE_FIFO_FILE}",
-			}
-		},
-		func(t string) (string, error) {
-			t, ok := strings.CutPrefix(t, pref)
-			if !ok {
-				return "", fmt.Errorf("suspicious sender: incorrect prefix")
-			}
-			targetTty, ok := strings.CutSuffix(t, suf)
-			if !ok {
-				return "", fmt.Errorf("suspicious sender: incorrect suffix")
-			}
-			return targetTty, nil
-		},
-		"/usr/bin/pinentry-curses",
-		os.Args[1:],
+	workspace, err := runworkspace.Open(
+		"tmux-popup-pinentry-curses-*",
+		userData.Debug() || os.Getenv("TMUX_POPUP_DEBUG") == "1",
+		slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	)
 	if err != nil {
-		panic(err)
+		return err
 	}
+	defer workspace.Close()
+	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", userData))
+
+	return runinpopup.CallPinentry(ctx, backend, runinpopup.PinentryOptions{
+		Logger:       workspace.Logger,
+		TempDir:      workspace.Dir,
+		PinentryArgs: os.Args[1:],
+	})
 }
