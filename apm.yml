@@ -9,19 +9,17 @@ dependencies:
     - git: github.com/ngicks/agents-package
       path: apm-package/cc-workers
     - git: github.com/ngicks/agents-package
+      path: hooks/go-golangci-lint
+    - git: github.com/ngicks/agents-package
       path: hooks/go-vet-ngcheckers
     - git: github.com/ngicks/agents-package
-      path: hooks/golangci-lint-fmt-after-edit
+      path: instructions/ngicks.base.env.instructions.md
     - git: github.com/ngicks/agents-package
-      path: hooks/golangci-lint-run-after-edit
+      path: instructions/ngicks.base.preference.instructions.md
     - git: github.com/ngicks/agents-package
-      path: instructions/base-env.instructions.md
+      path: instructions/ngicks.go.basics.instructions.md
     - git: github.com/ngicks/agents-package
-      path: instructions/base-preference.instructions.md
-    - git: github.com/ngicks/agents-package
-      path: instructions/go/go-basics.instructions.md
-    - git: github.com/ngicks/agents-package
-      path: instructions/go/go-design-preference.instructions.md
+      path: instructions/ngicks.go.design-preference.instructions.md
     - git: github.com/ngicks/agents-package
       path: skills/go-check-outdated-patterns
     - git: github.com/ngicks/agents-package
