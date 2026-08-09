@@ -13,8 +13,8 @@ import "strings"
 // Every field is optional: a short value simply leaves the trailing fields
 // empty, and callers validate the fields they actually need.
 type PinentryUserData struct {
-	// Kind names the host program, "TMUX_POPUP" or "ZELLIJ_POPUP". A "_DEBUG"
-	// suffix additionally requests debug logging.
+	// Kind names the host program, "TMUX_POPUP", "TMUX_FLOATING_PANE" or
+	// "ZELLIJ_POPUP". A "_DEBUG" suffix additionally requests debug logging.
 	Kind string
 	// Path is the multiplexer binary to invoke (tmux / zellij).
 	Path string

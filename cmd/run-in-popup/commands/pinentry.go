@@ -22,15 +22,18 @@ PINENTRY_USER_DATA, whose fields locate the multiplexer:
 
   KIND:multiplexer_path:session_id:client_id:session_meta
 
-KIND is "TMUX_POPUP" or "ZELLIJ_POPUP"; a "_DEBUG" suffix additionally writes a
-debug log to log.txt in the temporary directory and keeps that directory around.
+KIND is "TMUX_POPUP", "TMUX_FLOATING_PANE" or "ZELLIJ_POPUP"; a "_DEBUG" suffix
+additionally writes a debug log to log.txt in the temporary directory and keeps
+that directory around.
 
 --backend wins over the configured default_backend, which in turn wins over
-auto-detection from PINENTRY_USER_DATA, then $TMUX, then $ZELLIJ. Arguments
-after "--" are passed to the pinentry binary unchanged.`
+auto-detection from PINENTRY_USER_DATA, then $TMUX (which selects tmux-popup;
+tmux floating panes stay an explicit choice), then $ZELLIJ. Arguments after "--"
+are passed to the pinentry binary unchanged.`
 
 const pinentryExample = `  run-in-popup pinentry
   run-in-popup pinentry --backend zellij
+  run-in-popup pinentry --backend tmux-floating-pane
   run-in-popup pinentry --pinentry /usr/bin/pinentry-tty -- --display :0`
 
 func pinentryCmd(parent *cobra.Command, flagConfig *string) {
@@ -54,7 +57,8 @@ func pinentryCmd(parent *cobra.Command, flagConfig *string) {
 		&flagBackend,
 		"backend",
 		"",
-		`popup backend, "tmux-popup" or "zellij" (default: auto-detected)`,
+		`popup backend, "tmux-popup", "tmux-floating-pane" or "zellij"`+
+			` (default: auto-detected)`,
 	)
 	cmd.Flags().StringVar(
 		&flagPinentry,

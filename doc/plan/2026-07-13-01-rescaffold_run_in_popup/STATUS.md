@@ -44,6 +44,35 @@ previously-divergent points (top-level service package, `internal/libver`, no
 vendored release code). PLAN.md and DECISION.md keep their original spelling
 as the historical record.
 
+2026-07-28 amendment: the `tmux-floating-pane` backend is **implemented**, on
+explicit user request. PLAN.md lists it as a non-goal ("New popup backends
+beyond `tmux-popup` and `zellij`") and D7 deliberately shipped only the seam —
+both stay as the historical record of what was decided then.
+
+The backend honors the contract D7–D9 fixed for it, unchanged:
+
+- `runinpopup/backend_tmux_floating_pane.go` — `tmux new-pane` argv, targeted by
+  session (`-t`); `ClientId` cannot be honored, `new-pane` has no
+  client-targeting flag. No `-d`: the popup must take the keyboard.
+- **D9 version gate**: `Prepare` runs `tmux -V` and de-zooms on anything not
+  positively identifiable as ≥ 3.7c. `next-3.8` development builds count as
+  affected — their version string pins no commit. Unparseable, empty, and an
+  unrunnable `tmux -V` all fall through to the de-zoom path.
+- **De-zoom mechanics**: `display-message -p '#{window_zoomed_flag}:#{pane_id}'`,
+  then `resize-pane -Z` on that pane id. Failing to read the zoom state on an
+  affected tmux aborts before the pane is created (fail closed). Every `Prepare`
+  exec carries `Environ()`, or it would inspect the default socket's server
+  while the popup opens on another.
+- **D8 restore**: re-zooms the remembered pane id — not the session's active
+  pane, which may still be the popup. `withPopupPrepared` (run.go) already logs
+  restore errors instead of failing the run, so no caller change was needed.
+
+Verified against the local tmux 3.7b on scratch servers (`-L`, never the default
+socket): the crash reproduces when a floating pane created over a zoomed pane
+exits, and does not when the pane is created after `Prepare`'s de-zoom.
+`Backend`'s `Prepare` doc comment and the README's backend section carry the
+same contract. Shims untouched.
+
 ## Checklist (mirrors PLAN.md steps)
 
 - [x] 1. Scaffold canonical helpers + `cmd/run-in-popup` skeleton (go-edit-cobra)

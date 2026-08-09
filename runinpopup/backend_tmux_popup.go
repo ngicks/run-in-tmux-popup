@@ -3,14 +3,8 @@ package runinpopup
 import (
 	"cmp"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
-	"fmt"
-	"io"
 	"maps"
 	"slices"
-	"strings"
 )
 
 var _ PinentryHandshaker = (*TmuxPopupBackend)(nil)
@@ -38,12 +32,8 @@ func NewTmuxPopupBackend(opts BackendOptions) (*TmuxPopupBackend, error) {
 		sessionMeta: opts.SessionMeta,
 		tmuxEnv:     opts.TMUX,
 	}
-	if b.tmuxEnv == "" && !strings.Contains(b.sessionMeta, ",") {
-		return nil, fmt.Errorf(
-			"tmux session meta is malformed:"+
-				" it must be something like %q but is %q",
-			"/run/user/1000/tmux-1000/default,111,0", b.sessionMeta,
-		)
+	if err := validateTmuxSessionMeta(b.sessionMeta, b.tmuxEnv); err != nil {
+		return nil, err
 	}
 	return b, nil
 }
@@ -73,10 +63,7 @@ func (b *TmuxPopupBackend) PopupCommand(spec PopupSpec) (string, []string) {
 // Environ sets $TMUX from the session meta when the current process has none.
 // Without $TMUX the popup silently never appears.
 func (b *TmuxPopupBackend) Environ() []string {
-	if b.tmuxEnv != "" || b.sessionMeta == "" {
-		return nil
-	}
-	return []string{"TMUX=" + b.sessionMeta}
+	return tmuxSessionEnviron(b.sessionMeta, b.tmuxEnv)
 }
 
 // Prepare is a no-op: the tmux 3.7b crash on popup creation over a zoomed pane
@@ -85,62 +72,10 @@ func (b *TmuxPopupBackend) Prepare(_ context.Context) (func(context.Context) err
 	return nil, nil
 }
 
-// tmuxTTYHandshakeScript reports the popup's tty on ${TTY_FIFO_FILE}, wrapped in
-// the secrets, then blocks until the proxy writes to ${DONE_FIFO_FILE}. The FIFO
-// paths and secrets arrive as popup env so they never appear in the tmux argv
-// twice.
-const tmuxTTYHandshakeScript = "echo ${SEC_PREFIX}$(tty)${SEC_SUFFIX} >> ${TTY_FIFO_FILE}" +
-	" && read done < ${DONE_FIFO_FILE}"
-
-// NewPinentryHandshake wraps the announced tty in a per-popup random prefix and
-// suffix. Anything else that manages to open the tty FIFO first cannot produce
-// them, so its tty is rejected instead of being handed the passphrase prompt.
+// NewPinentryHandshake uses the shared tmux handshake: display-popup injects the
+// FIFO paths and the guard secrets as popup env (-e).
 func (b *TmuxPopupBackend) NewPinentryHandshake(
 	ttyFifo, doneFifo string,
 ) (PinentryHandshake, error) {
-	prefix, err := randomToken()
-	if err != nil {
-		return PinentryHandshake{}, err
-	}
-	suffix, err := randomToken()
-	if err != nil {
-		return PinentryHandshake{}, err
-	}
-	return PinentryHandshake{
-		Spec: PopupSpec{
-			Env: map[string]string{
-				"TTY_FIFO_FILE":  ttyFifo,
-				"DONE_FIFO_FILE": doneFifo,
-				"SEC_PREFIX":     prefix,
-				"SEC_SUFFIX":     suffix,
-			},
-			Script: tmuxTTYHandshakeScript,
-		},
-		ValidateTTY: guardedTTYValidator(prefix, suffix),
-	}, nil
-}
-
-// guardedTTYValidator peels the prefix/suffix guard off the announced tty.
-func guardedTTYValidator(prefix, suffix string) func(string) (string, error) {
-	return func(line string) (string, error) {
-		line, ok := strings.CutPrefix(line, prefix)
-		if !ok {
-			return "", errors.New("suspicious sender: incorrect prefix")
-		}
-		targetTty, ok := strings.CutSuffix(line, suffix)
-		if !ok {
-			return "", errors.New("suspicious sender: incorrect suffix")
-		}
-		return targetTty, nil
-	}
-}
-
-// randomToken returns 128 hex-encoded random bits, the width the legacy binary
-// used.
-func randomToken() (string, error) {
-	var b [16]byte
-	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
-		return "", fmt.Errorf("generating random token: %w", err)
-	}
-	return hex.EncodeToString(b[:]), nil
+	return newTmuxPinentryHandshake(ttyFifo, doneFifo)
 }

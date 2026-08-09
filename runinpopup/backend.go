@@ -6,18 +6,18 @@ import (
 	"strings"
 )
 
-// Backend names. They name the popup *mechanism*, not the multiplexer: a
-// tmux floating-pane backend is planned and will be a third name rather than a
-// variant of BackendTmuxPopup.
+// Backend names. They name the popup *mechanism*, not the multiplexer: tmux has
+// two, and they are separate names rather than variants of one another.
 const (
-	BackendTmuxPopup = "tmux-popup"
-	BackendZellij    = "zellij"
+	BackendTmuxPopup        = "tmux-popup"
+	BackendTmuxFloatingPane = "tmux-floating-pane"
+	BackendZellij           = "zellij"
 )
 
 // BackendNames lists every name NewBackend accepts, in the order they are
 // reported to users.
 func BackendNames() []string {
-	return []string{BackendTmuxPopup, BackendZellij}
+	return []string{BackendTmuxPopup, BackendTmuxFloatingPane, BackendZellij}
 }
 
 // PopupSpec is the payload a popup runs: what to execute, with which
@@ -67,9 +67,9 @@ type Backend interface {
 	// Both may be no-ops: a nil restore means "nothing to undo", and is the
 	// normal result for backends that need no adjustment.
 	//
-	// The contract for the planned tmux-floating-pane backend, whose Prepare
-	// works around the tmux 3.7b crash on creating a floating pane while a pane
-	// is zoomed:
+	// tmux-floating-pane is the one implementation: it works around the tmux 3.7b
+	// crash on creating a floating pane while a pane is zoomed, under the
+	// contract fixed for it before it was written:
 	//   - Version-gated: de-zoom only on tmux versions affected by the bug
 	//     (< 3.7c). An unparseable version counts as affected — a spurious
 	//     de-zoom is flicker, a missed one takes down the tmux server.
@@ -92,17 +92,19 @@ type BackendOptions struct {
 	// BinaryPath is the multiplexer binary, e.g. PinentryUserData.Path. Empty
 	// falls back to the backend's binary name, resolved through $PATH.
 	BinaryPath string
-	// SessionId is the multiplexer session hosting the popup (zellij:
-	// --session).
+	// SessionId is the multiplexer session hosting the popup (zellij: --session;
+	// tmux-floating-pane: -t).
 	SessionId string
-	// ClientId is the tmux client to display the popup on (tmux: popup -c).
+	// ClientId is the tmux client to display the popup on (tmux-popup: popup -c).
+	// tmux-floating-pane ignores it too: new-pane has no client-targeting flag,
+	// because the pane lives in a window every client viewing it sees.
 	ClientId string
 	// SessionMeta is the $TMUX value from PINENTRY_USER_DATA, used when the
 	// current process has no $TMUX of its own.
 	SessionMeta string
 	// TMUX is the caller's current $TMUX value, read by the caller so the
 	// backend does not have to touch the environment. Empty means unset, and
-	// makes the tmux-popup backend fall back to SessionMeta.
+	// makes both tmux backends fall back to SessionMeta.
 	TMUX string
 	// Shell runs payloads for backends that can only execute an argv (zellij).
 	// Empty means "sh".
@@ -111,11 +113,14 @@ type BackendOptions struct {
 
 // NewBackend builds the backend named by name. Use it when the name comes from
 // a flag, config or DetectBackendName; call NewTmuxPopupBackend /
-// NewZellijBackend directly when the backend is known statically.
+// NewTmuxFloatingPaneBackend / NewZellijBackend directly when the backend is
+// known statically.
 func NewBackend(name string, opts BackendOptions) (Backend, error) {
 	switch name {
 	case BackendTmuxPopup:
 		return NewTmuxPopupBackend(opts)
+	case BackendTmuxFloatingPane:
+		return NewTmuxFloatingPaneBackend(opts)
 	case BackendZellij:
 		return NewZellijBackend(opts)
 	default:
@@ -133,13 +138,18 @@ func NewBackend(name string, opts BackendOptions) (Backend, error) {
 //   - userDataKind is PinentryUserData.Kind, the most specific hint since the
 //     gpg-agent wrapper script picked it deliberately. A "_DEBUG" suffix does
 //     not change the mechanism, so the kind is matched by prefix.
-//   - tmuxEnv is $TMUX and zellijEnv is $ZELLIJ, checked in that order.
+//   - tmuxEnv is $TMUX and zellijEnv is $ZELLIJ, checked in that order. A bare
+//     $TMUX names the multiplexer, not one of its two popup mechanisms, and
+//     resolves to BackendTmuxPopup: display-popup is the older, unconditionally
+//     safe one, so floating panes stay an explicit choice.
 //
 // It returns an error naming the valid backends when nothing matches.
 func DetectBackendName(userDataKind, tmuxEnv, zellijEnv string) (string, error) {
 	switch kind := strings.ToUpper(strings.TrimSpace(userDataKind)); {
 	case strings.HasPrefix(kind, "TMUX_POPUP"):
 		return BackendTmuxPopup, nil
+	case strings.HasPrefix(kind, "TMUX_FLOATING_PANE"):
+		return BackendTmuxFloatingPane, nil
 	case strings.HasPrefix(kind, "ZELLIJ_POPUP"):
 		return BackendZellij, nil
 	}

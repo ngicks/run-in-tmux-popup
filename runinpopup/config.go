@@ -24,8 +24,8 @@ type Config struct {
 	// PinentryPath is the pinentry binary the proxy executes outside the popup.
 	PinentryPath string `json:"pinentry_path" yaml:"pinentry_path"`
 	// DefaultBackend names the popup backend used when no backend is given
-	// explicitly. Valid values are "tmux-popup" and "zellij"; empty means
-	// auto-detect from the environment.
+	// explicitly. Valid values are "tmux-popup", "tmux-floating-pane" and
+	// "zellij"; empty means auto-detect from the environment.
 	DefaultBackend string `json:"default_backend" yaml:"default_backend"`
 	// Timeouts bounds the popup/pinentry handshake (nested sub-config:
 	// deep-merged).

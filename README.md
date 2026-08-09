@@ -4,7 +4,8 @@ Wrappers to call things in a terminal-multiplexer popup.
 
 The current entrypoint is **`run-in-popup`**. Its `pinentry` subcommand proxies
 the Assuan exchange gpg-agent runs over stdin/stdout to a `pinentry-curses`
-drawing in a tmux `display-popup` or a zellij floating pane.
+drawing in a tmux `display-popup`, a tmux floating pane or a zellij floating
+pane.
 
 The older `tmux-popup-pinentry-curses` / `zellij-popup-pinentry-curses`
 binaries still work but are [deprecated](#deprecated-legacy-binaries).
@@ -33,7 +34,7 @@ Usage:
   run-in-popup pinentry [-- pinentry-arg...] [flags]
 
 Flags:
-      --backend string    popup backend, "tmux-popup" or "zellij" (default: auto-detected)
+      --backend string    popup backend, "tmux-popup", "tmux-floating-pane" or "zellij" (default: auto-detected)
       --pinentry string   pinentry binary run on the popup tty (default: the configured pinentry_path)
 ```
 
@@ -56,6 +57,14 @@ elif [ -n "${ZELLIJ}" ]; then
 fi
 ```
 
+To open a tmux **floating pane** instead of a `display-popup`, use
+`TMUX_FLOATING_PANE` as the `KIND`. It ignores `client_id`, but the field is
+positional, so its colon has to stay:
+
+```bash
+export PINENTRY_USER_DATA="TMUX_FLOATING_PANE:$(which tmux):$(tmux display -p '#{session_name}')::${TMUX}"
+```
+
 The format is colon-separated and positional:
 
 ```
@@ -64,15 +73,15 @@ The format is colon-separated and positional:
 
 | field          | meaning                                                                  |
 | -------------- | ------------------------------------------------------------------------ |
-| `KIND`         | `TMUX_POPUP` or `ZELLIJ_POPUP`, optionally with a `_DEBUG` suffix         |
+| `KIND`         | `TMUX_POPUP`, `TMUX_FLOATING_PANE` or `ZELLIJ_POPUP`, optionally with a `_DEBUG` suffix |
 | `path/to/bin`  | the multiplexer binary to invoke                                          |
-| `session_id`   | the session hosting the popup — used by the zellij backend (`--session`)  |
-| `client_id`    | the client to display the popup on — tmux only                            |
+| `session_id`   | the session hosting the popup — used by `zellij` (`--session`) and `tmux-floating-pane` (`-t`) |
+| `client_id`    | the client to display the popup on — `tmux-popup` only                    |
 | `session_meta` | the `$TMUX` value, `socket_path,server_pid,session_index` — tmux only     |
 
 Parsing tolerates a short value — trailing fields simply come out empty, and
-anything after `session_meta` is kept as `rest` and otherwise ignored — but the
-`tmux-popup` backend then rejects a missing `session_meta`:
+anything after `session_meta` is kept as `rest` and otherwise ignored — but both
+tmux backends then reject a missing `session_meta`:
 
 ```
 tmux session meta is malformed: it must be something like "/run/user/1000/tmux-1000/default,111,0" but is ""
@@ -84,7 +93,11 @@ tmux, keep the `${TMUX}` at the end. The `zellij` backend needs `session_id`
 and ignores both tmux-only fields.
 
 Unfortunately current `zellij` has no means to specify a client id to which the
-display should be popped up, hence the empty `client_id` above.
+display should be popped up, hence the empty `client_id` above. `client_id` is
+just as useless to `tmux-floating-pane`: `new-pane` has no client-targeting flag
+because the pane lives in a window, and every client viewing that window sees
+it. That backend uses `session_id` instead, so fill it in as the snippet above
+already does.
 
 A `_DEBUG` suffix on `KIND` (`TMUX_POPUP_DEBUG`) writes a debug log to
 `log.txt` inside the run's temporary directory and keeps that directory around
@@ -104,7 +117,7 @@ case "${PINENTRY_USER_DATA-}" in
 *TTY*)
   exec pinentry-curses "$@"
   ;;
-*TMUX_POPUP* | *ZELLIJ_POPUP*)
+*TMUX_POPUP* | *TMUX_FLOATING_PANE* | *ZELLIJ_POPUP*)
   exec "$HOME/.local/bin/run-in-popup" pinentry -- "$@"
   ;;
 esac
@@ -112,8 +125,9 @@ esac
 exec pinentry-qt "$@"
 ```
 
-One branch covers both multiplexers: with no `--backend`, the backend is
-auto-detected from `KIND`.
+One branch covers every backend: with no `--backend`, the backend is
+auto-detected from `KIND`. A `KIND` the script does not match falls through to
+the `pinentry-qt` line, so keep the patterns in sync with the `KIND` you export.
 
 > [!IMPORTANT]
 > Note the `--` before `"$@"`. `run-in-popup` parses its own flags, so pinentry
@@ -142,9 +156,19 @@ pinentry-program /home/ngicks/.local/scripts/pinentry.sh
 
 ### Backend selection
 
-Valid backends are `tmux-popup` (tmux `display-popup`) and `zellij` (zellij
-floating pane). They are named after the popup *mechanism*, not the
-multiplexer, leaving room for a `tmux-floating-pane` backend later.
+Backends are named after the popup *mechanism*, not the multiplexer, because
+tmux has two of them:
+
+| backend              | mechanism                             | targets      |
+| -------------------- | ------------------------------------- | ------------ |
+| `tmux-popup`         | `tmux display-popup -E`               | `client_id`  |
+| `tmux-floating-pane` | `tmux new-pane` (the `*` binding)     | `session_id` |
+| `zellij`             | `zellij run --floating`               | `session_id` |
+
+`tmux-floating-pane` needs a tmux with the `new-pane` command — bound to `*` by
+default, and verified here against tmux 3.7b. Unlike a `display-popup`, the pane
+it opens is a real pane: it is part of the window, so every client viewing that
+window sees it, and there is no client targeting.
 
 The backend is resolved in this order, first hit wins:
 
@@ -156,6 +180,24 @@ The backend is resolved in this order, first hit wins:
 
 If nothing matches, the command fails and lists the valid values rather than
 guessing.
+
+Auto-detection only picks `tmux-floating-pane` from an explicit
+`TMUX_FLOATING_PANE` `KIND`. A bare `$TMUX` names the multiplexer, not one of
+its two mechanisms, and keeps resolving to `tmux-popup`.
+
+> [!WARNING]
+> **tmux 3.7b crashes the whole server** when a floating pane is created while a
+> pane in the window is zoomed — the server dies as the floating pane exits,
+> taking every session with it. `display-popup` is unaffected, so this only
+> concerns `tmux-floating-pane`. The fix is in tmux 3.7c.
+>
+> The backend works around it: before opening the pane it runs `tmux -V`, and on
+> anything it cannot identify as 3.7c or later it checks `#{window_zoomed_flag}`
+> and de-zooms first, re-zooming the same pane once the popup is gone. A version
+> string it cannot parse — including the `next-3.8` of development builds, which
+> pins no commit — counts as affected, since a needless de-zoom is a flicker and
+> a missed one is a dead server. Re-zooming is best-effort: if it fails the
+> window is left unzoomed and the failure is logged, never fatal.
 
 ### Configuration
 
@@ -177,7 +219,7 @@ $ run-in-popup config
 | key                   | meaning                                             | default                    |
 | --------------------- | --------------------------------------------------- | -------------------------- |
 | `pinentry_path`       | pinentry binary run on the popup tty                | `/usr/bin/pinentry-curses` |
-| `default_backend`     | backend to use; empty means auto-detect             | `""`                       |
+| `default_backend`     | backend to use (see [above](#backend-selection)); empty means auto-detect | `""`  |
 | `timeouts.overall`    | bounds the whole popup/pinentry exchange            | 2m                         |
 | `timeouts.tty_read`   | bounds reading the popup's tty from the FIFO        | 20s                        |
 | `timeouts.done_write` | bounds signalling the popup to close                | 1s                         |
@@ -267,9 +309,21 @@ import "github.com/ngicks/run-in-tmux-popup/runinpopup"
 
 `Run` opens a popup and executes an arbitrary command in it; `CallPinentry` is
 the pinentry proxy layered on the same mechanism. Backends are constructed
-explicitly (`NewTmuxPopupBackend`, `NewZellijBackend`, or `NewBackend` by
-name) from values the caller supplies — the package never reads the
-environment on its own.
+explicitly (`NewTmuxPopupBackend`, `NewTmuxFloatingPaneBackend`,
+`NewZellijBackend`, or `NewBackend` by name) from values the caller supplies —
+the package never reads the environment on its own.
+
+`Backend.Prepare` is where a backend fixes up multiplexer state a popup would
+otherwise break — the tmux de-zoom above is its one implementation — and returns
+a restore func `Run` and `CallPinentry` call on the way out.
+
+Neither of them waits for the popup to be gone first. `Run` returns as soon as
+`new-pane` does, while the pane it created is still alive; `CallPinentry`
+returns once it has written the done FIFO, without waiting for the pane to act
+on it. With `tmux-floating-pane` the re-zoom can therefore land on a live
+floating pane, which tmux answers by pulling that pane out of its float and into
+the layout — not by crashing. That is the guarantee this relies on; it is not an
+ordering guarantee.
 
 ### But why?
 

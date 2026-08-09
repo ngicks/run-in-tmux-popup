@@ -29,10 +29,11 @@ type RunOptions struct {
 // popup launcher to exit. Canceling ctx interrupts the launcher.
 //
 // The launcher exits as soon as the multiplexer has taken over the popup, which
-// for tmux display-popup is when the popup closes but for zellij is when the
-// floating pane has been created. Callers that need to know when the payload
-// itself finished must arrange for the payload to tell them, as the pinentry
-// proxy does with its FIFO handshake.
+// for tmux display-popup is when the popup closes but for the two floating-pane
+// backends — zellij, and tmux new-pane — is as soon as the pane has been
+// created, with the payload still running. Callers that need to know when the
+// payload itself finished must arrange for the payload to tell them, as the
+// pinentry proxy does with its FIFO handshake.
 func Run(ctx context.Context, backend Backend, opts RunOptions) error {
 	logger := loggerOrDiscard(opts.Logger)
 	return withPopupPrepared(ctx, logger, backend, func(ctx context.Context) error {

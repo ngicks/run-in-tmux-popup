@@ -19,6 +19,20 @@ func tmuxBackend(t *testing.T) *TmuxPopupBackend {
 	return b
 }
 
+func tmuxFloatingPaneBackend(t *testing.T) *TmuxFloatingPaneBackend {
+	t.Helper()
+	b, err := NewTmuxFloatingPaneBackend(BackendOptions{
+		BinaryPath:  "/usr/bin/tmux",
+		SessionId:   "work",
+		ClientId:    "%1",
+		SessionMeta: "/run/user/1000/tmux-1000/default,111,0",
+	})
+	if err != nil {
+		t.Fatalf("NewTmuxFloatingPaneBackend: %v", err)
+	}
+	return b
+}
+
 func zellijBackend(t *testing.T) *ZellijBackend {
 	t.Helper()
 	b, err := NewZellijBackend(BackendOptions{
@@ -183,6 +197,130 @@ func TestTmuxPopupBackend_ValidateTTY(t *testing.T) {
 	}
 }
 
+func TestTmuxFloatingPaneBackend_PopupCommand_pinentryHandshake(t *testing.T) {
+	b := tmuxFloatingPaneBackend(t)
+
+	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
+	if err != nil {
+		t.Fatalf("NewPinentryHandshake: %v", err)
+	}
+	prefix := handshake.Spec.Env["SEC_PREFIX"]
+	suffix := handshake.Spec.Env["SEC_SUFFIX"]
+
+	path, args := b.PopupCommand(handshake.Spec)
+	assertPopupCommand(t, path, args, "/usr/bin/tmux", []string{
+		"new-pane",
+		"-t", "work",
+		"-e", "DONE_FIFO_FILE=/tmp/popup/done",
+		"-e", "SEC_PREFIX=" + prefix,
+		"-e", "SEC_SUFFIX=" + suffix,
+		"-e", "TTY_FIFO_FILE=/tmp/popup/tty",
+		"--", "echo ${SEC_PREFIX}$(tty)${SEC_SUFFIX} >> ${TTY_FIFO_FILE}" +
+			" && read done < ${DONE_FIFO_FILE}",
+	})
+}
+
+// The guard is the tmux-popup one, shared: same secrets, same validator.
+func TestTmuxFloatingPaneBackend_ValidateTTY(t *testing.T) {
+	handshake, err := tmuxFloatingPaneBackend(t).
+		NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
+	if err != nil {
+		t.Fatalf("NewPinentryHandshake: %v", err)
+	}
+	prefix := handshake.Spec.Env["SEC_PREFIX"]
+	suffix := handshake.Spec.Env["SEC_SUFFIX"]
+
+	got, err := handshake.ValidateTTY(prefix + "/dev/pts/3" + suffix)
+	if err != nil || got != "/dev/pts/3" {
+		t.Errorf("ValidateTTY = %q, %v, want %q", got, err, "/dev/pts/3")
+	}
+	if _, err := handshake.ValidateTTY("/dev/pts/3"); err == nil {
+		t.Error("an unguarded tty must be rejected")
+	}
+}
+
+// The title is dropped and "--" separates a payload that could start with "-";
+// -d must stay away or the popup never takes the keyboard.
+func TestTmuxFloatingPaneBackend_PopupCommand_argvIsQuoted(t *testing.T) {
+	b := tmuxFloatingPaneBackend(t)
+
+	path, args := b.PopupCommand(PopupSpec{
+		Title:   "editor",
+		Env:     map[string]string{"B": "2", "A": "1"},
+		Command: []string{"vim", "my file.txt"},
+	})
+	assertPopupCommand(t, path, args, "/usr/bin/tmux", []string{
+		"new-pane",
+		"-t", "work",
+		"-e", "A=1",
+		"-e", "B=2",
+		"--", `'vim' 'my file.txt'`,
+	})
+	if slices.Contains(args, "-d") {
+		t.Error("-d would leave the focus outside the popup")
+	}
+}
+
+func TestTmuxFloatingPaneBackend_PopupCommand_noSession(t *testing.T) {
+	b, err := NewTmuxFloatingPaneBackend(BackendOptions{TMUX: "/tmp/tmux-1000/default,1,0"})
+	if err != nil {
+		t.Fatalf("NewTmuxFloatingPaneBackend: %v", err)
+	}
+	path, args := b.PopupCommand(PopupSpec{Command: []string{"true"}})
+	assertPopupCommand(t, path, args, "tmux", []string{"new-pane", "--", `'true'`})
+}
+
+func TestTmuxFloatingPaneBackend_Environ(t *testing.T) {
+	meta := "/run/user/1000/tmux-1000/default,111,0"
+
+	if got := tmuxFloatingPaneBackend(t).Environ(); !slices.Equal(got, []string{"TMUX=" + meta}) {
+		t.Errorf("Environ = %#v, want TMUX set from the session meta", got)
+	}
+
+	inside, err := NewTmuxFloatingPaneBackend(BackendOptions{SessionMeta: meta, TMUX: "/other,2,0"})
+	if err != nil {
+		t.Fatalf("NewTmuxFloatingPaneBackend: %v", err)
+	}
+	if got := inside.Environ(); got != nil {
+		t.Errorf("Environ = %#v, want nil when $TMUX is already set", got)
+	}
+}
+
+func TestTmuxAffectedByZoomCrash(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		want    bool
+		why     string
+	}{
+		{"tmux 3.7b", true, "the version that crashes"},
+		{"tmux 3.7b\n", true, "tmux -V output ends in a newline"},
+		{"tmux 3.7", true, "no suffix sorts before 3.7a"},
+		{"tmux 3.7a", true, ""},
+		{"tmux 3.7c", false, "the fix"},
+		{"tmux 3.7d", false, ""},
+		{"tmux 3.6", true, ""},
+		{"tmux 2.9a", true, "floating panes did not exist; the popup fails on its own"},
+		{"tmux 3.8", false, ""},
+		{"tmux 3.10", false, "the minor is compared as a number, not as text"},
+		{"tmux 4.0", false, ""},
+		{"tmux next-3.8", true, "a dev build's version pins no commit, so it cannot show the fix"},
+		{"tmux master", true, "unparseable"},
+		{"3.7c", true, `the "tmux " prefix is part of the contract`},
+		{"tmux 3.7.1", true, "not a release form tmux prints"},
+		{"tmux 3.", true, "unparseable"},
+		{"tmux ", true, "unparseable"},
+		{"", true, "no output at all"},
+		{"garbage", true, "unparseable"},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			if got := tmuxAffectedByZoomCrash(tc.version); got != tc.want {
+				t.Errorf("tmuxAffectedByZoomCrash(%q) = %v, want %v (%s)",
+					tc.version, got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
 func TestZellijBackend_PopupCommand_pinentryHandshake(t *testing.T) {
 	b := zellijBackend(t)
 
@@ -251,6 +389,8 @@ func TestZellijBackend_Environ(t *testing.T) {
 	}
 }
 
+// Listed explicitly rather than ranging over BackendNames: tmux-floating-pane is
+// the one backend whose Prepare does something, and execs tmux to find out.
 func TestBackendPrepare_isNoOp(t *testing.T) {
 	for _, b := range []Backend{tmuxBackend(t), zellijBackend(t)} {
 		t.Run(b.Name(), func(t *testing.T) {
@@ -302,6 +442,22 @@ func TestDetectBackendName(t *testing.T) {
 		{name: "kind wins over env", kind: "TMUX_POPUP", zellijEnv: "0", want: BackendTmuxPopup},
 		{name: "zellij kind", kind: "ZELLIJ_POPUP", tmuxEnv: "/tmp/s,1,0", want: BackendZellij},
 		{name: "debug kind", kind: "TMUX_POPUP_DEBUG", want: BackendTmuxPopup},
+		{
+			name: "tmux floating pane kind",
+			kind: "TMUX_FLOATING_PANE",
+			want: BackendTmuxFloatingPane,
+		},
+		{
+			name: "tmux floating pane debug kind",
+			kind: "TMUX_FLOATING_PANE_DEBUG",
+			want: BackendTmuxFloatingPane,
+		},
+		{
+			// The floating backend is opt-in: nothing ambient selects it.
+			name:    "bare tmux env stays on display-popup",
+			tmuxEnv: "/tmp/s,1,0",
+			want:    BackendTmuxPopup,
+		},
 		{name: "lowercase kind", kind: "zellij_popup", want: BackendZellij},
 		{name: "tmux env", tmuxEnv: "/tmp/s,1,0", want: BackendTmuxPopup},
 		{name: "zellij env", zellijEnv: "0", want: BackendZellij},
