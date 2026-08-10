@@ -54,6 +54,8 @@ func rootCmd() *cobra.Command {
 	versionCmd(cmd)
 	configCmd(cmd, &flagConfig)
 	pinentryCmd(cmd, &flagConfig)
+	execCmd(cmd, &flagConfig)
+	execPayloadCmd(cmd)
 
 	// TODO: declare additional root flags inside the `var (...)` block above
 	// and bind them with `cmd.PersistentFlags().<Type>Var(&flag, ...)`. Extend

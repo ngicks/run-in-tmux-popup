@@ -73,6 +73,39 @@ exits, and does not when the pane is created after `Prepare`'s de-zoom.
 `Backend`'s `Prepare` doc comment and the README's backend section carry the
 same contract. Shims untouched.
 
+2026-08-09 amendment: an `exec` subcommand is **implemented**, on explicit user
+request, together with the result transport it needs. PLAN.md scopes the work to
+the pinentry proxy plus a generic `Run` primitive (step 4), and `Run`'s doc
+comment says a payload that must report back has to arrange its own signalling —
+which was true of the pinentry FIFO handshake and is what this adds a second,
+general answer to. PLAN.md and DECISION.md stay as the historical record.
+
+- `runinpopup/exec.go` — `CallExec` opens a popup running this binary again as a
+  hidden `exec-payload` subcommand, and reads one `ExecResult` (JSON: `command`,
+  `exit_code`, `stdout`, `stderr`, `error`) back over a FIFO in the caller's
+  temp dir. `ExecPayload` is the popup half: it tees the command's output to the
+  popup terminal while capturing it, with stdin on the popup's tty.
+- **Why not layered on `Run`**: `Run` returns when the *launcher* exits, which
+  for both floating-pane backends is while the payload is still running. `exec`
+  has to return when the command is done, so it waits on the FIFO instead — the
+  same reason `CallPinentry` does not use `Run` either.
+- **Rendezvous, not `O_RDWR`**: unlike the pinentry FIFOs, the payload opens its
+  write end (`O_WRONLY|O_NONBLOCK`, retrying `ENXIO`) *before* running anything
+  and the caller opens read-only, so the FIFO's EOF is the payload's death
+  certificate rather than something the caller's own writer masks. Only the
+  rendezvous is on a clock (`ExecOptions.StartupTimeout`, 30s, passed to the
+  payload in its argv); the command itself runs unbounded under ctx.
+  `Config.Timeouts` is not consulted — it sizes a pinentry prompt.
+- **Exit status**: the caller exits 0 whenever the exchange worked, with the
+  command's status inside the JSON. The popup process exits *as* the command
+  (signal death mapped to 128+signal), through an unexported `exitCodeError` the
+  entry point unwraps, so nothing under `./cmd` calls `os.Exit` from a `RunE`.
+
+Verified end to end against the local tmux 3.7b on a scratch server for
+non-zero, zero, unstartable and signal-killed commands, and by unit tests for
+the failure paths a live popup cannot easily produce (payload that never
+connects, payload that dies after connecting, cancellation in either phase).
+
 ## Checklist (mirrors PLAN.md steps)
 
 - [x] 1. Scaffold canonical helpers + `cmd/run-in-popup` skeleton (go-edit-cobra)

@@ -5,7 +5,8 @@ Wrappers to call things in a terminal-multiplexer popup.
 The current entrypoint is **`run-in-popup`**. Its `pinentry` subcommand proxies
 the Assuan exchange gpg-agent runs over stdin/stdout to a `pinentry-curses`
 drawing in a tmux `display-popup`, a tmux floating pane or a zellij floating
-pane.
+pane. Its [`exec`](#run-in-popup-exec) subcommand runs any command in such a
+popup and hands the result back to the caller as JSON.
 
 The older `tmux-popup-pinentry-curses` / `zellij-popup-pinentry-curses`
 binaries still work but are [deprecated](#deprecated-legacy-binaries).
@@ -251,6 +252,70 @@ Every key also has an environment variable, prefixed `RUN_IN_POPUP_`:
 accept Go duration strings in the environment
 (`RUN_IN_POPUP_TIMEOUTS_OVERALL=2m`).
 
+## `run-in-popup exec`
+
+```
+Usage:
+  run-in-popup exec [flags] -- command [arg...]
+
+Flags:
+      --backend string   popup backend, "tmux-popup", "tmux-floating-pane" or "zellij" (default: auto-detected)
+      --title string     popup title (default: the backend's own; tmux-floating-pane has no title flag and ignores it)
+```
+
+It opens a popup, runs the command in it — drawn there live, with the popup's
+terminal as its stdin, so it may prompt — and once the command exits prints a
+single compact JSON object on **its own** stdout, back in the shell that called
+it:
+
+```
+$ run-in-popup exec -- sh -c 'echo built; exit 2'
+{"command":["sh","-c","echo built; exit 2"],"exit_code":2,"stdout":"built\n","stderr":""}
+```
+
+| key                  | meaning                                                                        |
+| -------------------- | ------------------------------------------------------------------------------ |
+| `command`            | the argv that was run                                                          |
+| `exit_code`          | the command's status, `-1` when it never started or was killed by a signal     |
+| `stdout` / `stderr`  | everything the command wrote, captured whole                                   |
+| `error`              | present only when there is no status to report — see below                     |
+
+`error` appears when the command never started, or when its output could not be
+relayed; `exit_code` is then `-1` rather than anything the command chose.
+
+`run-in-popup exec` itself **exits 0 whenever the exchange worked**. A command
+that fails is not a failure of the transport: its status is `exit_code`, and the
+caller reads it out of the JSON.
+
+```
+$ run-in-popup exec -- make test | jq -r .exit_code
+```
+
+Everything after `--` is the command and is passed through untouched; without a
+`--`, bare arguments work as long as the command carries no flags of its own.
+The backend is chosen exactly as it is for `pinentry` — see
+[Backend selection](#backend-selection).
+
+A few things worth knowing:
+
+- The command's stdout and stderr are teed — live to the popup, captured for the
+  result — so they are pipes rather than the popup's tty. Programs that gate
+  color or progress rendering on `isatty` therefore render plainly. stdin *is*
+  the tty, so prompting still works.
+- `timeouts.overall` does **not** apply here. It sizes a pinentry prompt, and any
+  bound tight enough for that would kill the long builds this exists to run.
+  Only the popup's *startup* is on a clock — 30 s for it to get as far as running
+  the command — after which the command runs for as long as it likes, and only
+  your own Ctrl-C ends the wait.
+- A popup that dies mid-command is reported, not waited on: `exec` fails with
+  `the popup payload exited without reporting a result` rather than hanging.
+- `--title` is dropped by `tmux-floating-pane`: `new-pane` has no title flag. It
+  reaches `tmux-popup` (as `-T`) and `zellij` (as `--name`).
+
+The popup runs this same binary again, as a hidden `exec-payload` subcommand
+holding the path of the FIFO the result travels back through. It is an
+implementation detail — never invoke it by hand.
+
 ## Deprecated: legacy binaries
 
 `tmux-popup-pinentry-curses` and `zellij-popup-pinentry-curses` are
@@ -308,22 +373,24 @@ import "github.com/ngicks/run-in-tmux-popup/runinpopup"
 ```
 
 `Run` opens a popup and executes an arbitrary command in it; `CallPinentry` is
-the pinentry proxy layered on the same mechanism. Backends are constructed
-explicitly (`NewTmuxPopupBackend`, `NewTmuxFloatingPaneBackend`,
+the pinentry proxy layered on the same mechanism, and `CallExec` is the exec
+round trip, which pairs with `ExecPayload` on the popup side. Backends are
+constructed explicitly (`NewTmuxPopupBackend`, `NewTmuxFloatingPaneBackend`,
 `NewZellijBackend`, or `NewBackend` by name) from values the caller supplies —
 the package never reads the environment on its own.
 
 `Backend.Prepare` is where a backend fixes up multiplexer state a popup would
 otherwise break — the tmux de-zoom above is its one implementation — and returns
-a restore func `Run` and `CallPinentry` call on the way out.
+a restore func every entry point calls on the way out.
 
-Neither of them waits for the popup to be gone first. `Run` returns as soon as
+None of them waits for the popup to be gone first. `Run` returns as soon as
 `new-pane` does, while the pane it created is still alive; `CallPinentry`
 returns once it has written the done FIFO, without waiting for the pane to act
-on it. With `tmux-floating-pane` the re-zoom can therefore land on a live
-floating pane, which tmux answers by pulling that pane out of its float and into
-the layout — not by crashing. That is the guarantee this relies on; it is not an
-ordering guarantee.
+on it; `CallExec` returns once the result is on the FIFO, which the payload
+writes just before it exits. With `tmux-floating-pane` the re-zoom can therefore
+land on a live floating pane, which tmux answers by pulling that pane out of its
+float and into the layout — not by crashing. That is the guarantee this relies
+on; it is not an ordering guarantee.
 
 ### But why?
 
