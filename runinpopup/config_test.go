@@ -11,7 +11,7 @@ import (
 // configEnvVars is every variable LoadConfig reads: the hand-read config-path
 // override plus one per PartialConfig env tag.
 var configEnvVars = []string{
-	envConfVar,
+	ENV_RUN_IN_POPUP_CONF,
 	"RUN_IN_POPUP_PINENTRY_PATH",
 	"RUN_IN_POPUP_DEFAULT_BACKEND",
 	"RUN_IN_POPUP_TIMEOUTS_OVERALL",
@@ -152,20 +152,24 @@ func TestLoadConfig_layering(t *testing.T) {
 func TestLoadConfig_path(t *testing.T) {
 	t.Run("RUN_IN_POPUP_CONF names the file when --config is empty", func(t *testing.T) {
 		isolateConfigEnv(t)
-		t.Setenv(envConfVar, writeConfig(t, `{"pinentry_path":"/from/conf-var"}`))
+		t.Setenv(ENV_RUN_IN_POPUP_CONF, writeConfig(t, `{"pinentry_path":"/from/conf-var"}`))
 
 		got, err := LoadConfig("")
 		if err != nil {
 			t.Fatalf("LoadConfig: %v", err)
 		}
 		if got.PinentryPath != "/from/conf-var" {
-			t.Errorf("PinentryPath = %q, want the file %s names", got.PinentryPath, envConfVar)
+			t.Errorf(
+				"PinentryPath = %q, want the file %s names",
+				got.PinentryPath,
+				ENV_RUN_IN_POPUP_CONF,
+			)
 		}
 	})
 
 	t.Run("--config wins over RUN_IN_POPUP_CONF", func(t *testing.T) {
 		isolateConfigEnv(t)
-		t.Setenv(envConfVar, writeConfig(t, `{"pinentry_path":"/from/conf-var"}`))
+		t.Setenv(ENV_RUN_IN_POPUP_CONF, writeConfig(t, `{"pinentry_path":"/from/conf-var"}`))
 		flagPath := writeConfig(t, `{"pinentry_path":"/from/flag"}`)
 
 		got, err := LoadConfig(flagPath)

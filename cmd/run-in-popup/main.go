@@ -5,30 +5,26 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sync"
+	"os/signal"
 
 	"github.com/ngicks/run-in-tmux-popup/cmd/run-in-popup/commands"
 	"github.com/ngicks/run-in-tmux-popup/internal/cmdsignals"
 )
 
 func main() {
-	blockOn, ctx, cancel := cmdsignals.NotifyContext(context.Background())
-
-	var wg sync.WaitGroup
-	wg.Go(blockOn)
+	ctx, stop := signal.NotifyContext(context.Background(), cmdsignals.ExitSignals[:]...)
 
 	err := commands.Execute(ctx)
 
-	// Check before cancel(nil) below — that call would set ctx.Err() and
-	// manufacture a false positive.
+	// Check before stop() below — that call would set ctx.Err() and
+	// manufacture a false positive. On signal cancellation the cause names
+	// the signal ("interrupt signal received") instead of the opaque
+	// "context canceled".
 	if err != nil && errors.Is(err, ctx.Err()) {
-		if sigErr, ok := errors.AsType[*cmdsignals.SignalReceivedError](context.Cause(ctx)); ok {
-			err = sigErr
-		}
+		err = context.Cause(ctx)
 	}
 
-	cancel(nil)
-	wg.Wait()
+	stop()
 
 	if err == nil {
 		return

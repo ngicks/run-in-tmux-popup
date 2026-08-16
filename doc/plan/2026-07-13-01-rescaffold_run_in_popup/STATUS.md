@@ -106,6 +106,33 @@ non-zero, zero, unstartable and signal-killed commands, and by unit tests for
 the failure paths a live popup cannot easily produce (payload that never
 connects, payload that dies after connecting, cancellation in either phase).
 
+2026-08-17 amendment: re-aligned with the updated go-edit-cobra canon, on
+explicit user request ("rescaffold using updated skill"). Two divergences
+existed; everything else already matched the current templates.
+
+- `internal/cmdsignals` shrank to the canon's signals-only form: `signals.go`
+  holds just the project-owned `ExitSignals` set, and the old bespoke
+  `NotifyContext`/`Pause`/`Resume` implementation and its tests are gone
+  (nothing used the swap machinery). The canon's full form — a `notify.go`
+  proxy over `github.com/ngicks/go-common/atomicsignal` — was copied first,
+  then dropped on explicit user request: with no handler swapping anywhere,
+  `cmd/run-in-popup/main.go` now uses stdlib `signal.NotifyContext(ctx,
+  cmdsignals.ExitSignals[:]...)` (the skill's "don't revert to stdlib" rule
+  exists for the Swap/Restore capability this project doesn't need). Go 1.26's
+  `signal.NotifyContext` sets a `context.Cause` naming the signal, so the
+  signal-vs-error distinction in main survives; the recovery is now a plain
+  `err = context.Cause(ctx)` under the same `errors.Is(err, ctx.Err())` guard,
+  checked before `stop()`. No atomicsignal dependency; the shims were already
+  on stdlib and are unchanged.
+- `runinpopup/config.go` gained the template's top const block: exported
+  `ENV_RUN_IN_POPUP_CONF` (verbatim nolint directive included) and `EnvPrefix`,
+  plus unexported `defaultConfigDir`, replacing the unexported `envConfVar`
+  and inline prefix. Same strings, so runtime behavior is unchanged;
+  `config_test.go` references were renamed.
+
+The `internal/libver` version value `v0.0.2-devel` was carried over after the
+helper copy, per the same reasoning as the 2026-07-28 libver migration.
+
 ## Checklist (mirrors PLAN.md steps)
 
 - [x] 1. Scaffold canonical helpers + `cmd/run-in-popup` skeleton (go-edit-cobra)
