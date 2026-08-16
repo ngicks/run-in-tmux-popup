@@ -17,6 +17,7 @@ import (
 
 	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/backend"
 )
 
 const deprecationNotice = "zellij-popup-pinentry-curses is deprecated;" +
@@ -48,7 +49,7 @@ func run() error {
 		)
 	}
 
-	backend, err := runinpopup.NewZellijBackend(runinpopup.BackendOptions{
+	popupBackend, err := backend.NewZellij(backend.Options{
 		BinaryPath: userData.Path,
 		SessionId:  userData.SessionId,
 		Shell:      cmp.Or(os.Getenv("SHELL"), "bash"),
@@ -70,7 +71,7 @@ func run() error {
 	defer workspace.Close()
 	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", userData))
 
-	return runinpopup.CallPinentry(ctx, backend, runinpopup.PinentryOptions{
+	return runinpopup.CallPinentry(ctx, popupBackend, runinpopup.PinentryOptions{
 		Logger:       workspace.Logger,
 		TempDir:      workspace.Dir,
 		PinentryArgs: os.Args[1:],

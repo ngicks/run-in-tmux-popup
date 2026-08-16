@@ -1,47 +1,49 @@
-package runinpopup
+package backend
 
 import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ngicks/run-in-tmux-popup/runinpopup"
 )
 
-func tmuxBackend(t *testing.T) *TmuxPopupBackend {
+func tmuxBackend(t *testing.T) *TmuxPopup {
 	t.Helper()
-	b, err := NewTmuxPopupBackend(BackendOptions{
+	b, err := NewTmuxPopup(Options{
 		BinaryPath:  "/usr/bin/tmux",
 		ClientId:    "%1",
 		SessionMeta: "/run/user/1000/tmux-1000/default,111,0",
 	})
 	if err != nil {
-		t.Fatalf("NewTmuxPopupBackend: %v", err)
+		t.Fatalf("NewTmuxPopup: %v", err)
 	}
 	return b
 }
 
-func tmuxFloatingPaneBackend(t *testing.T) *TmuxFloatingPaneBackend {
+func tmuxFloatingPaneBackend(t *testing.T) *TmuxFloatingPane {
 	t.Helper()
-	b, err := NewTmuxFloatingPaneBackend(BackendOptions{
+	b, err := NewTmuxFloatingPane(Options{
 		BinaryPath:  "/usr/bin/tmux",
 		SessionId:   "work",
 		ClientId:    "%1",
 		SessionMeta: "/run/user/1000/tmux-1000/default,111,0",
 	})
 	if err != nil {
-		t.Fatalf("NewTmuxFloatingPaneBackend: %v", err)
+		t.Fatalf("NewTmuxFloatingPane: %v", err)
 	}
 	return b
 }
 
-func zellijBackend(t *testing.T) *ZellijBackend {
+func zellijBackend(t *testing.T) *Zellij {
 	t.Helper()
-	b, err := NewZellijBackend(BackendOptions{
+	b, err := NewZellij(Options{
 		BinaryPath: "/usr/bin/zellij",
 		SessionId:  "session-id",
 		Shell:      "/bin/bash",
 	})
 	if err != nil {
-		t.Fatalf("NewZellijBackend: %v", err)
+		t.Fatalf("NewZellij: %v", err)
 	}
 	return b
 }
@@ -64,7 +66,7 @@ func assertPopupCommand(
 
 // The handshake argv is asserted literally: it is the one command line proven to
 // work against a live tmux, so any change to it must be a deliberate edit here.
-func TestTmuxPopupBackend_PopupCommand_pinentryHandshake(t *testing.T) {
+func TestTmuxPopup_PopupCommand_pinentryHandshake(t *testing.T) {
 	b := tmuxBackend(t)
 
 	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
@@ -87,10 +89,10 @@ func TestTmuxPopupBackend_PopupCommand_pinentryHandshake(t *testing.T) {
 	})
 }
 
-func TestTmuxPopupBackend_PopupCommand_argvIsQuoted(t *testing.T) {
+func TestTmuxPopup_PopupCommand_argvIsQuoted(t *testing.T) {
 	b := tmuxBackend(t)
 
-	path, args := b.PopupCommand(PopupSpec{
+	path, args := b.PopupCommand(runinpopup.PopupSpec{
 		Title:   "editor",
 		Env:     map[string]string{"B": "2", "A": "1"},
 		Command: []string{"vim", "my file.txt"},
@@ -105,21 +107,21 @@ func TestTmuxPopupBackend_PopupCommand_argvIsQuoted(t *testing.T) {
 	})
 }
 
-func TestTmuxPopupBackend_PopupCommand_noClient(t *testing.T) {
-	b, err := NewTmuxPopupBackend(BackendOptions{TMUX: "/tmp/tmux-1000/default,1,0"})
+func TestTmuxPopup_PopupCommand_noClient(t *testing.T) {
+	b, err := NewTmuxPopup(Options{TMUX: "/tmp/tmux-1000/default,1,0"})
 	if err != nil {
-		t.Fatalf("NewTmuxPopupBackend: %v", err)
+		t.Fatalf("NewTmuxPopup: %v", err)
 	}
-	path, args := b.PopupCommand(PopupSpec{Command: []string{"true"}})
+	path, args := b.PopupCommand(runinpopup.PopupSpec{Command: []string{"true"}})
 	assertPopupCommand(t, path, args, "tmux", []string{"popup", "-E", `'true'`})
 }
 
-func TestNewTmuxPopupBackend_sessionMeta(t *testing.T) {
+func TestNewTmuxPopup_sessionMeta(t *testing.T) {
 	// Malformed meta only matters when it is the value that will be exported.
-	if _, err := NewTmuxPopupBackend(BackendOptions{SessionMeta: "not-a-meta"}); err == nil {
+	if _, err := NewTmuxPopup(Options{SessionMeta: "not-a-meta"}); err == nil {
 		t.Error("malformed session meta must be rejected when $TMUX is unset")
 	}
-	if _, err := NewTmuxPopupBackend(BackendOptions{
+	if _, err := NewTmuxPopup(Options{
 		SessionMeta: "not-a-meta",
 		TMUX:        "/tmp/tmux-1000/default,1,0",
 	}); err != nil {
@@ -127,7 +129,7 @@ func TestNewTmuxPopupBackend_sessionMeta(t *testing.T) {
 	}
 }
 
-func TestTmuxPopupBackend_Environ(t *testing.T) {
+func TestTmuxPopup_Environ(t *testing.T) {
 	meta := "/run/user/1000/tmux-1000/default,111,0"
 
 	b := tmuxBackend(t)
@@ -135,16 +137,16 @@ func TestTmuxPopupBackend_Environ(t *testing.T) {
 		t.Errorf("Environ = %#v, want TMUX set from the session meta", got)
 	}
 
-	inside, err := NewTmuxPopupBackend(BackendOptions{SessionMeta: meta, TMUX: "/other,2,0"})
+	inside, err := NewTmuxPopup(Options{SessionMeta: meta, TMUX: "/other,2,0"})
 	if err != nil {
-		t.Fatalf("NewTmuxPopupBackend: %v", err)
+		t.Fatalf("NewTmuxPopup: %v", err)
 	}
 	if got := inside.Environ(); got != nil {
 		t.Errorf("Environ = %#v, want nil when $TMUX is already set", got)
 	}
 }
 
-func TestTmuxPopupBackend_ValidateTTY(t *testing.T) {
+func TestTmuxPopup_ValidateTTY(t *testing.T) {
 	b := tmuxBackend(t)
 
 	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
@@ -197,7 +199,7 @@ func TestTmuxPopupBackend_ValidateTTY(t *testing.T) {
 	}
 }
 
-func TestTmuxFloatingPaneBackend_PopupCommand_pinentryHandshake(t *testing.T) {
+func TestTmuxFloatingPane_PopupCommand_pinentryHandshake(t *testing.T) {
 	b := tmuxFloatingPaneBackend(t)
 
 	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
@@ -221,7 +223,7 @@ func TestTmuxFloatingPaneBackend_PopupCommand_pinentryHandshake(t *testing.T) {
 }
 
 // The guard is the tmux-popup one, shared: same secrets, same validator.
-func TestTmuxFloatingPaneBackend_ValidateTTY(t *testing.T) {
+func TestTmuxFloatingPane_ValidateTTY(t *testing.T) {
 	handshake, err := tmuxFloatingPaneBackend(t).
 		NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
 	if err != nil {
@@ -241,10 +243,10 @@ func TestTmuxFloatingPaneBackend_ValidateTTY(t *testing.T) {
 
 // The title is dropped and "--" separates a payload that could start with "-";
 // -d must stay away or the popup never takes the keyboard.
-func TestTmuxFloatingPaneBackend_PopupCommand_argvIsQuoted(t *testing.T) {
+func TestTmuxFloatingPane_PopupCommand_argvIsQuoted(t *testing.T) {
 	b := tmuxFloatingPaneBackend(t)
 
-	path, args := b.PopupCommand(PopupSpec{
+	path, args := b.PopupCommand(runinpopup.PopupSpec{
 		Title:   "editor",
 		Env:     map[string]string{"B": "2", "A": "1"},
 		Command: []string{"vim", "my file.txt"},
@@ -261,25 +263,25 @@ func TestTmuxFloatingPaneBackend_PopupCommand_argvIsQuoted(t *testing.T) {
 	}
 }
 
-func TestTmuxFloatingPaneBackend_PopupCommand_noSession(t *testing.T) {
-	b, err := NewTmuxFloatingPaneBackend(BackendOptions{TMUX: "/tmp/tmux-1000/default,1,0"})
+func TestTmuxFloatingPane_PopupCommand_noSession(t *testing.T) {
+	b, err := NewTmuxFloatingPane(Options{TMUX: "/tmp/tmux-1000/default,1,0"})
 	if err != nil {
-		t.Fatalf("NewTmuxFloatingPaneBackend: %v", err)
+		t.Fatalf("NewTmuxFloatingPane: %v", err)
 	}
-	path, args := b.PopupCommand(PopupSpec{Command: []string{"true"}})
+	path, args := b.PopupCommand(runinpopup.PopupSpec{Command: []string{"true"}})
 	assertPopupCommand(t, path, args, "tmux", []string{"new-pane", "--", `'true'`})
 }
 
-func TestTmuxFloatingPaneBackend_Environ(t *testing.T) {
+func TestTmuxFloatingPane_Environ(t *testing.T) {
 	meta := "/run/user/1000/tmux-1000/default,111,0"
 
 	if got := tmuxFloatingPaneBackend(t).Environ(); !slices.Equal(got, []string{"TMUX=" + meta}) {
 		t.Errorf("Environ = %#v, want TMUX set from the session meta", got)
 	}
 
-	inside, err := NewTmuxFloatingPaneBackend(BackendOptions{SessionMeta: meta, TMUX: "/other,2,0"})
+	inside, err := NewTmuxFloatingPane(Options{SessionMeta: meta, TMUX: "/other,2,0"})
 	if err != nil {
-		t.Fatalf("NewTmuxFloatingPaneBackend: %v", err)
+		t.Fatalf("NewTmuxFloatingPane: %v", err)
 	}
 	if got := inside.Environ(); got != nil {
 		t.Errorf("Environ = %#v, want nil when $TMUX is already set", got)
@@ -321,7 +323,7 @@ func TestTmuxAffectedByZoomCrash(t *testing.T) {
 	}
 }
 
-func TestZellijBackend_PopupCommand_pinentryHandshake(t *testing.T) {
+func TestZellij_PopupCommand_pinentryHandshake(t *testing.T) {
 	b := zellijBackend(t)
 
 	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
@@ -347,10 +349,10 @@ func TestZellijBackend_PopupCommand_pinentryHandshake(t *testing.T) {
 	})
 }
 
-func TestZellijBackend_PopupCommand_argvRunsDirectly(t *testing.T) {
+func TestZellij_PopupCommand_argvRunsDirectly(t *testing.T) {
 	b := zellijBackend(t)
 
-	path, args := b.PopupCommand(PopupSpec{Command: []string{"vim", "my file.txt"}})
+	path, args := b.PopupCommand(runinpopup.PopupSpec{Command: []string{"vim", "my file.txt"}})
 	assertPopupCommand(t, path, args, "/usr/bin/zellij", []string{
 		"--session=session-id",
 		"run",
@@ -363,10 +365,10 @@ func TestZellijBackend_PopupCommand_argvRunsDirectly(t *testing.T) {
 	})
 }
 
-func TestZellijBackend_PopupCommand_envGoesThroughShell(t *testing.T) {
+func TestZellij_PopupCommand_envGoesThroughShell(t *testing.T) {
 	b := zellijBackend(t)
 
-	path, args := b.PopupCommand(PopupSpec{
+	path, args := b.PopupCommand(runinpopup.PopupSpec{
 		Env:     map[string]string{"B": "two", "A": "it's one"},
 		Command: []string{"env"},
 	})
@@ -383,7 +385,7 @@ func TestZellijBackend_PopupCommand_envGoesThroughShell(t *testing.T) {
 	})
 }
 
-func TestZellijBackend_Environ(t *testing.T) {
+func TestZellij_Environ(t *testing.T) {
 	if got := zellijBackend(t).Environ(); got != nil {
 		t.Errorf("Environ = %#v, want nil", got)
 	}
@@ -392,7 +394,7 @@ func TestZellijBackend_Environ(t *testing.T) {
 // Listed explicitly rather than ranging over BackendNames: tmux-floating-pane is
 // the one backend whose Prepare does something, and execs tmux to find out.
 func TestBackendPrepare_isNoOp(t *testing.T) {
-	for _, b := range []Backend{tmuxBackend(t), zellijBackend(t)} {
+	for _, b := range []runinpopup.Backend{tmuxBackend(t), zellijBackend(t)} {
 		t.Run(b.Name(), func(t *testing.T) {
 			restore, err := b.Prepare(t.Context())
 			if err != nil {
@@ -405,32 +407,32 @@ func TestBackendPrepare_isNoOp(t *testing.T) {
 	}
 }
 
-func TestNewBackend(t *testing.T) {
-	for _, name := range BackendNames() {
-		b, err := NewBackend(name, BackendOptions{
+func TestNew(t *testing.T) {
+	for _, name := range Names() {
+		b, err := New(name, Options{
 			SessionMeta: "/run/user/1000/tmux-1000/default,111,0",
 		})
 		if err != nil {
-			t.Fatalf("NewBackend(%q): %v", name, err)
+			t.Fatalf("New(%q): %v", name, err)
 		}
 		if b.Name() != name {
-			t.Errorf("NewBackend(%q).Name() = %q", name, b.Name())
+			t.Errorf("New(%q).Name() = %q", name, b.Name())
 		}
-		if _, ok := b.(PinentryHandshaker); !ok {
+		if _, ok := b.(runinpopup.PinentryHandshaker); !ok {
 			t.Errorf("backend %q does not implement PinentryHandshaker", name)
 		}
 	}
 
-	_, err := NewBackend("tmux", BackendOptions{})
+	_, err := New("tmux", Options{})
 	if err == nil {
-		t.Fatal("NewBackend(\"tmux\") must fail: the name is tmux-popup")
+		t.Fatal("New(\"tmux\") must fail: the name is tmux-popup")
 	}
-	if !strings.Contains(err.Error(), BackendTmuxPopup) {
+	if !strings.Contains(err.Error(), NameTmuxPopup) {
 		t.Errorf("error must list the valid names, got %v", err)
 	}
 }
 
-func TestDetectBackendName(t *testing.T) {
+func TestDetectName(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		kind       string
@@ -439,34 +441,34 @@ func TestDetectBackendName(t *testing.T) {
 		want       string
 		wantErrStr string
 	}{
-		{name: "kind wins over env", kind: "TMUX_POPUP", zellijEnv: "0", want: BackendTmuxPopup},
-		{name: "zellij kind", kind: "ZELLIJ_POPUP", tmuxEnv: "/tmp/s,1,0", want: BackendZellij},
-		{name: "debug kind", kind: "TMUX_POPUP_DEBUG", want: BackendTmuxPopup},
+		{name: "kind wins over env", kind: "TMUX_POPUP", zellijEnv: "0", want: NameTmuxPopup},
+		{name: "zellij kind", kind: "ZELLIJ_POPUP", tmuxEnv: "/tmp/s,1,0", want: NameZellij},
+		{name: "debug kind", kind: "TMUX_POPUP_DEBUG", want: NameTmuxPopup},
 		{
 			name: "tmux floating pane kind",
 			kind: "TMUX_FLOATING_PANE",
-			want: BackendTmuxFloatingPane,
+			want: NameTmuxFloatingPane,
 		},
 		{
 			name: "tmux floating pane debug kind",
 			kind: "TMUX_FLOATING_PANE_DEBUG",
-			want: BackendTmuxFloatingPane,
+			want: NameTmuxFloatingPane,
 		},
 		{
 			// The floating backend is opt-in: nothing ambient selects it.
 			name:    "bare tmux env stays on display-popup",
 			tmuxEnv: "/tmp/s,1,0",
-			want:    BackendTmuxPopup,
+			want:    NameTmuxPopup,
 		},
-		{name: "lowercase kind", kind: "zellij_popup", want: BackendZellij},
-		{name: "tmux env", tmuxEnv: "/tmp/s,1,0", want: BackendTmuxPopup},
-		{name: "zellij env", zellijEnv: "0", want: BackendZellij},
-		{name: "tmux env wins", tmuxEnv: "/tmp/s,1,0", zellijEnv: "0", want: BackendTmuxPopup},
-		{name: "unknown kind falls through", kind: "PINENTRY", zellijEnv: "0", want: BackendZellij},
+		{name: "lowercase kind", kind: "zellij_popup", want: NameZellij},
+		{name: "tmux env", tmuxEnv: "/tmp/s,1,0", want: NameTmuxPopup},
+		{name: "zellij env", zellijEnv: "0", want: NameZellij},
+		{name: "tmux env wins", tmuxEnv: "/tmp/s,1,0", zellijEnv: "0", want: NameTmuxPopup},
+		{name: "unknown kind falls through", kind: "PINENTRY", zellijEnv: "0", want: NameZellij},
 		{name: "nothing", wantErrStr: "cannot detect the popup backend"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := DetectBackendName(tc.kind, tc.tmuxEnv, tc.zellijEnv)
+			got, err := DetectName(tc.kind, tc.tmuxEnv, tc.zellijEnv)
 			if tc.wantErrStr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErrStr) {
 					t.Fatalf("err = %v, want one containing %q", err, tc.wantErrStr)
@@ -474,10 +476,10 @@ func TestDetectBackendName(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("DetectBackendName: %v", err)
+				t.Fatalf("DetectName: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("DetectBackendName = %q, want %q", got, tc.want)
+				t.Errorf("DetectName = %q, want %q", got, tc.want)
 			}
 		})
 	}

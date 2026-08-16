@@ -10,6 +10,7 @@ import (
 
 	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/backend"
 )
 
 const pinentryLong = `pinentry proxies the Assuan exchange gpg-agent runs over stdin/stdout to a
@@ -97,7 +98,7 @@ func runPinentry(
 
 	backendName := cfg.DefaultBackend
 	if backendName == "" {
-		backendName, err = runinpopup.DetectBackendName(
+		backendName, err = backend.DetectName(
 			userData.Kind,
 			os.Getenv("TMUX"),
 			os.Getenv("ZELLIJ"),
@@ -106,7 +107,7 @@ func runPinentry(
 			return err
 		}
 	}
-	backend, err := runinpopup.NewBackend(backendName, runinpopup.BackendOptions{
+	popupBackend, err := backend.New(backendName, backend.Options{
 		BinaryPath:  userData.Path,
 		SessionId:   userData.SessionId,
 		ClientId:    userData.ClientId,
@@ -131,7 +132,7 @@ func runPinentry(
 	defer workspace.Close()
 	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", userData))
 
-	return runinpopup.CallPinentry(ctx, backend, runinpopup.PinentryOptions{
+	return runinpopup.CallPinentry(ctx, popupBackend, runinpopup.PinentryOptions{
 		Logger:       workspace.Logger,
 		TempDir:      workspace.Dir,
 		PinentryPath: cfg.PinentryPath,

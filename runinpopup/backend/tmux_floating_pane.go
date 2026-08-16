@@ -1,4 +1,4 @@
-package runinpopup
+package backend
 
 import (
 	"cmp"
@@ -11,21 +11,23 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/ngicks/run-in-tmux-popup/runinpopup"
 )
 
-var _ PinentryHandshaker = (*TmuxFloatingPaneBackend)(nil)
+var _ runinpopup.PinentryHandshaker = (*TmuxFloatingPane)(nil)
 
-// TmuxFloatingPaneBackend opens popups as tmux floating panes ("tmux new-pane",
+// TmuxFloatingPane opens popups as tmux floating panes ("tmux new-pane",
 // bound to `*` by default). A floating pane belongs to a window rather than to a
 // client, so it is addressed by session.
-type TmuxFloatingPaneBackend struct {
+type TmuxFloatingPane struct {
 	tmuxPath    string
 	sessionId   string
 	sessionMeta string
 	tmuxEnv     string
 }
 
-// NewTmuxFloatingPaneBackend builds the "tmux-floating-pane" backend. It uses
+// NewTmuxFloatingPane builds the "tmux-floating-pane" backend. It uses
 // BinaryPath (default "tmux"), SessionId, SessionMeta and TMUX. Shell is not
 // needed because tmux runs the payload through its own default-shell, and
 // ClientId cannot be honored at all: new-pane has no client-targeting flag —
@@ -34,8 +36,8 @@ type TmuxFloatingPaneBackend struct {
 //
 // SessionMeta is only validated when it is the value that will be used, i.e.
 // when TMUX is empty: a caller already inside tmux does not need it at all.
-func NewTmuxFloatingPaneBackend(opts BackendOptions) (*TmuxFloatingPaneBackend, error) {
-	b := &TmuxFloatingPaneBackend{
+func NewTmuxFloatingPane(opts Options) (*TmuxFloatingPane, error) {
+	b := &TmuxFloatingPane{
 		tmuxPath:    cmp.Or(opts.BinaryPath, "tmux"),
 		sessionId:   opts.SessionId,
 		sessionMeta: opts.SessionMeta,
@@ -47,8 +49,8 @@ func NewTmuxFloatingPaneBackend(opts BackendOptions) (*TmuxFloatingPaneBackend, 
 	return b, nil
 }
 
-func (b *TmuxFloatingPaneBackend) Name() string {
-	return BackendTmuxFloatingPane
+func (b *TmuxFloatingPane) Name() string {
+	return NameTmuxFloatingPane
 }
 
 // PopupCommand builds "tmux new-pane [-t <session>] [-e KEY=VALUE...] --
@@ -61,26 +63,26 @@ func (b *TmuxFloatingPaneBackend) Name() string {
 //
 // -d is deliberately absent. It would leave the focus where it was, and a
 // passphrase typed into an unfocused popup goes to the pane underneath.
-func (b *TmuxFloatingPaneBackend) PopupCommand(spec PopupSpec) (string, []string) {
+func (b *TmuxFloatingPane) PopupCommand(spec runinpopup.PopupSpec) (string, []string) {
 	args := b.targeted("new-pane")
 	for _, k := range slices.Sorted(maps.Keys(spec.Env)) {
 		args = append(args, "-e", k+"="+spec.Env[k])
 	}
-	args = append(args, "--", spec.shellCommandLine())
+	args = append(args, "--", commandLine(spec))
 	return b.tmuxPath, args
 }
 
 // Environ sets $TMUX from the session meta when the current process has none.
 // Without $TMUX the popup silently never appears.
-func (b *TmuxFloatingPaneBackend) Environ() []string {
+func (b *TmuxFloatingPane) Environ() []string {
 	return tmuxSessionEnviron(b.sessionMeta, b.tmuxEnv)
 }
 
 // NewPinentryHandshake uses the shared tmux handshake: new-pane injects the FIFO
 // paths and the guard secrets as pane env (-e), same as display-popup.
-func (b *TmuxFloatingPaneBackend) NewPinentryHandshake(
+func (b *TmuxFloatingPane) NewPinentryHandshake(
 	ttyFifo, doneFifo string,
-) (PinentryHandshake, error) {
+) (runinpopup.PinentryHandshake, error) {
 	return newTmuxPinentryHandshake(ttyFifo, doneFifo)
 }
 
@@ -105,7 +107,7 @@ func (b *TmuxFloatingPaneBackend) NewPinentryHandshake(
 // still alive un-floats it into the layout rather than crashing the server. So
 // the worst case is a popup pulled out of its float, most likely on the Run
 // path, where the pane is still alive by construction.
-func (b *TmuxFloatingPaneBackend) Prepare(
+func (b *TmuxFloatingPane) Prepare(
 	ctx context.Context,
 ) (func(context.Context) error, error) {
 	// A tmux that cannot report its version tells us nothing about whether it is
@@ -140,7 +142,7 @@ const zoomStateFormat = "#{window_zoomed_flag}:#{pane_id}"
 // one. The pane is remembered by id rather than re-derived from the session on
 // restore: by then the session's active pane may still be the popup, and
 // toggling zoom on that would zoom the popup instead of the user's pane.
-func (b *TmuxFloatingPaneBackend) zoomedPane(ctx context.Context) (bool, string, error) {
+func (b *TmuxFloatingPane) zoomedPane(ctx context.Context) (bool, string, error) {
 	out, err := b.runTmux(ctx, append(b.targeted("display-message", "-p"), zoomStateFormat)...)
 	if err != nil {
 		return false, "", fmt.Errorf("querying the zoomed pane: %w", err)
@@ -152,7 +154,7 @@ func (b *TmuxFloatingPaneBackend) zoomedPane(ctx context.Context) (bool, string,
 	return flag == "1", paneId, nil
 }
 
-func (b *TmuxFloatingPaneBackend) toggleZoom(ctx context.Context, paneId string) error {
+func (b *TmuxFloatingPane) toggleZoom(ctx context.Context, paneId string) error {
 	_, err := b.runTmux(ctx, "resize-pane", "-Z", "-t", paneId)
 	return err
 }
@@ -161,7 +163,7 @@ func (b *TmuxFloatingPaneBackend) toggleZoom(ctx context.Context, paneId string)
 // targets the popup so Prepare inspects the window the popup will open in.
 // Without a SessionId both omit it and tmux resolves the same current session,
 // so they stay consistent — just less explicit.
-func (b *TmuxFloatingPaneBackend) targeted(args ...string) []string {
+func (b *TmuxFloatingPane) targeted(args ...string) []string {
 	if b.sessionId == "" {
 		return args
 	}
@@ -172,7 +174,7 @@ func (b *TmuxFloatingPaneBackend) targeted(args ...string) []string {
 // without it Prepare would inspect the default socket's server while the popup
 // opens on another — and folds the command's stderr into the error, where tmux
 // reports "can't find pane" and friends.
-func (b *TmuxFloatingPaneBackend) runTmux(ctx context.Context, args ...string) (string, error) {
+func (b *TmuxFloatingPane) runTmux(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, b.tmuxPath, args...)
 	if extraEnv := b.Environ(); len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)

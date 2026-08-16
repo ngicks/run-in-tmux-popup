@@ -11,6 +11,7 @@ import (
 
 	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/backend"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/cli"
 )
 
@@ -93,7 +94,7 @@ func runExec(
 
 	backendName := cfg.DefaultBackend
 	if backendName == "" {
-		backendName, err = runinpopup.DetectBackendName(
+		backendName, err = backend.DetectName(
 			userData.Kind,
 			os.Getenv("TMUX"),
 			os.Getenv("ZELLIJ"),
@@ -102,7 +103,7 @@ func runExec(
 			return err
 		}
 	}
-	backend, err := runinpopup.NewBackend(backendName, runinpopup.BackendOptions{
+	popupBackend, err := backend.New(backendName, backend.Options{
 		BinaryPath:  userData.Path,
 		SessionId:   userData.SessionId,
 		ClientId:    userData.ClientId,
@@ -124,7 +125,7 @@ func runExec(
 	}
 	defer workspace.Close()
 
-	result, err := runinpopup.CallExec(ctx, backend, runinpopup.ExecOptions{
+	result, err := runinpopup.CallExec(ctx, popupBackend, runinpopup.ExecOptions{
 		Logger:  workspace.Logger,
 		TempDir: workspace.Dir,
 		Command: command,

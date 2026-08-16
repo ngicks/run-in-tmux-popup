@@ -16,6 +16,7 @@ import (
 
 	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/backend"
 )
 
 const deprecationNotice = "tmux-popup-pinentry-curses is deprecated;" +
@@ -47,7 +48,7 @@ func run() error {
 		)
 	}
 
-	backend, err := runinpopup.NewTmuxPopupBackend(runinpopup.BackendOptions{
+	popupBackend, err := backend.NewTmuxPopup(backend.Options{
 		BinaryPath:  userData.Path,
 		ClientId:    userData.ClientId,
 		SessionMeta: userData.SessionMeta,
@@ -68,7 +69,7 @@ func run() error {
 	defer workspace.Close()
 	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", userData))
 
-	return runinpopup.CallPinentry(ctx, backend, runinpopup.PinentryOptions{
+	return runinpopup.CallPinentry(ctx, popupBackend, runinpopup.PinentryOptions{
 		Logger:       workspace.Logger,
 		TempDir:      workspace.Dir,
 		PinentryArgs: os.Args[1:],

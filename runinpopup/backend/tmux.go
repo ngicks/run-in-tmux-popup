@@ -1,4 +1,4 @@
-package runinpopup
+package backend
 
 import (
 	"crypto/rand"
@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/ngicks/run-in-tmux-popup/runinpopup"
 )
 
 // Shared by the two tmux backends. They differ only in the popup mechanism
@@ -50,17 +52,17 @@ const tmuxTTYHandshakeScript = "echo ${SEC_PREFIX}$(tty)${SEC_SUFFIX} >> ${TTY_F
 // produce them, so its tty is rejected instead of being handed the passphrase
 // prompt. Both tmux mechanisms can inject the secrets as popup environment
 // (-e), which is what makes the guard worth having here and theater in zellij.
-func newTmuxPinentryHandshake(ttyFifo, doneFifo string) (PinentryHandshake, error) {
+func newTmuxPinentryHandshake(ttyFifo, doneFifo string) (runinpopup.PinentryHandshake, error) {
 	prefix, err := randomToken()
 	if err != nil {
-		return PinentryHandshake{}, err
+		return runinpopup.PinentryHandshake{}, err
 	}
 	suffix, err := randomToken()
 	if err != nil {
-		return PinentryHandshake{}, err
+		return runinpopup.PinentryHandshake{}, err
 	}
-	return PinentryHandshake{
-		Spec: PopupSpec{
+	return runinpopup.PinentryHandshake{
+		Spec: runinpopup.PopupSpec{
 			Env: map[string]string{
 				"TTY_FIFO_FILE":  ttyFifo,
 				"DONE_FIFO_FILE": doneFifo,

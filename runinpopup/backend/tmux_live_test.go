@@ -1,4 +1,4 @@
-package runinpopup
+package backend
 
 import (
 	"errors"
@@ -21,7 +21,7 @@ var scratchTmuxSeq atomic.Uint64
 // server is never the user's default one: this package's Prepare exists because
 // the wrong move here crashes a whole tmux server, and these tests exercise
 // exactly that move.
-func scratchTmux(t *testing.T) (*TmuxFloatingPaneBackend, func(args ...string) string) {
+func scratchTmux(t *testing.T) (*TmuxFloatingPane, func(args ...string) string) {
 	t.Helper()
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {
@@ -65,13 +65,13 @@ func scratchTmux(t *testing.T) (*TmuxFloatingPaneBackend, func(args ...string) s
 	// $TMUX synthesized from SessionMeta, whose first field is the socket path.
 	// TMUX is left empty on purpose so that path is the one under test — running
 	// these tests inside tmux must not touch the surrounding server.
-	b, err := NewTmuxFloatingPaneBackend(BackendOptions{
+	b, err := NewTmuxFloatingPane(Options{
 		BinaryPath:  tmuxPath,
 		SessionId:   "probe",
 		SessionMeta: socketPath + ",0,0",
 	})
 	if err != nil {
-		t.Fatalf("NewTmuxFloatingPaneBackend: %v", err)
+		t.Fatalf("NewTmuxFloatingPane: %v", err)
 	}
 	return b, tmux
 }
@@ -89,7 +89,7 @@ func requireZoomCrashAffectedTmux(t *testing.T, tmuxPath string) {
 	}
 }
 
-func TestTmuxFloatingPaneBackend_Prepare_live(t *testing.T) {
+func TestTmuxFloatingPane_Prepare_live(t *testing.T) {
 	b, tmux := scratchTmux(t)
 
 	zoomState := func() string {
@@ -141,18 +141,18 @@ func TestTmuxFloatingPaneBackend_Prepare_live(t *testing.T) {
 // Prepare must reach the server the popup will open in, not whichever one the
 // ambient environment points at, or it reports the zoom state of the wrong
 // window and the guard silently stops guarding.
-func TestTmuxFloatingPaneBackend_Prepare_liveWrongServerIsNotConsulted(t *testing.T) {
+func TestTmuxFloatingPane_Prepare_liveWrongServerIsNotConsulted(t *testing.T) {
 	b, tmux := scratchTmux(t)
 	requireZoomCrashAffectedTmux(t, b.tmuxPath)
 	tmux("resize-pane", "-Z", "-t", "probe")
 
-	misdirected, err := NewTmuxFloatingPaneBackend(BackendOptions{
+	misdirected, err := NewTmuxFloatingPane(Options{
 		BinaryPath:  b.tmuxPath,
 		SessionId:   "probe",
 		SessionMeta: "/nonexistent/socket,0,0",
 	})
 	if err != nil {
-		t.Fatalf("NewTmuxFloatingPaneBackend: %v", err)
+		t.Fatalf("NewTmuxFloatingPane: %v", err)
 	}
 	if _, err := misdirected.Prepare(t.Context()); err == nil {
 		t.Fatal("Prepare must fail when the zoom state cannot be read: it fails closed")

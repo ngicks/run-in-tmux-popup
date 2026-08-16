@@ -113,7 +113,14 @@ func TestCallPinentry_requiresHandshaker(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "PinentryHandshaker") {
 		t.Fatalf("err = %v, want it to name the missing interface", err)
 	}
-	if err := CallPinentry(t.Context(), tmuxBackend(t), PinentryOptions{}); err == nil {
+	backend := &handshakingShellBackend{shellBackend: shellBackend{stdout: new(bytes.Buffer)}}
+	if err := CallPinentry(t.Context(), backend, PinentryOptions{}); err == nil {
 		t.Fatal("an unset TempDir must be rejected")
 	}
+}
+
+type handshakingShellBackend struct{ shellBackend }
+
+func (b *handshakingShellBackend) NewPinentryHandshake(string, string) (PinentryHandshake, error) {
+	return PinentryHandshake{}, nil
 }

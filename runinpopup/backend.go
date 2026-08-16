@@ -14,8 +14,7 @@ const (
 	BackendZellij           = "zellij"
 )
 
-// BackendNames lists every name NewBackend accepts, in the order they are
-// reported to users.
+// BackendNames lists every known backend name in the order reported to users.
 func BackendNames() []string {
 	return []string{BackendTmuxPopup, BackendTmuxFloatingPane, BackendZellij}
 }
@@ -77,58 +76,6 @@ type Backend interface {
 	//     context that outlives the popup's cancellation, and log its error
 	//     rather than failing the run.
 	Prepare(ctx context.Context) (restore func(context.Context) error, err error)
-}
-
-// BackendOptions carries the coordinates every backend constructor can consume,
-// so a caller that resolved a backend by name does not have to switch on the
-// name to build it. Fields not used by a backend are ignored — notably
-// ClientId, SessionMeta and TMUX, which are tmux-only (zellij cannot target a
-// client), and Shell, which tmux-popup does not need because tmux runs the
-// popup payload through its own default-shell.
-//
-// Values come from the caller (PINENTRY_USER_DATA, flags, config); no
-// constructor reads the environment itself.
-type BackendOptions struct {
-	// BinaryPath is the multiplexer binary, e.g. PinentryUserData.Path. Empty
-	// falls back to the backend's binary name, resolved through $PATH.
-	BinaryPath string
-	// SessionId is the multiplexer session hosting the popup (zellij: --session;
-	// tmux-floating-pane: -t).
-	SessionId string
-	// ClientId is the tmux client to display the popup on (tmux-popup: popup -c).
-	// tmux-floating-pane ignores it too: new-pane has no client-targeting flag,
-	// because the pane lives in a window every client viewing it sees.
-	ClientId string
-	// SessionMeta is the $TMUX value from PINENTRY_USER_DATA, used when the
-	// current process has no $TMUX of its own.
-	SessionMeta string
-	// TMUX is the caller's current $TMUX value, read by the caller so the
-	// backend does not have to touch the environment. Empty means unset, and
-	// makes both tmux backends fall back to SessionMeta.
-	TMUX string
-	// Shell runs payloads for backends that can only execute an argv (zellij).
-	// Empty means "sh".
-	Shell string
-}
-
-// NewBackend builds the backend named by name. Use it when the name comes from
-// a flag, config or DetectBackendName; call NewTmuxPopupBackend /
-// NewTmuxFloatingPaneBackend / NewZellijBackend directly when the backend is
-// known statically.
-func NewBackend(name string, opts BackendOptions) (Backend, error) {
-	switch name {
-	case BackendTmuxPopup:
-		return NewTmuxPopupBackend(opts)
-	case BackendTmuxFloatingPane:
-		return NewTmuxFloatingPaneBackend(opts)
-	case BackendZellij:
-		return NewZellijBackend(opts)
-	default:
-		return nil, fmt.Errorf(
-			"unknown popup backend %q: valid values are %s",
-			name, strings.Join(BackendNames(), ", "),
-		)
-	}
 }
 
 // DetectBackendName picks a backend name from ambient hints, for callers that
