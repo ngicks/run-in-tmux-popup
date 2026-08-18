@@ -67,7 +67,7 @@ const (
 	// exited with an error. The launcher's exit says little on its own: with tmux
 	// display-popup it is also how a *successful* run ends, carrying the payload's
 	// own status, while the floating-pane backends exit long before the payload
-	// does (see Run). Failing the moment it errors would race a payload that is
+	// does. Failing the moment it errors would race a payload that is
 	// already opening its end, so it only shortens the wait.
 	execLauncherGrace = 2 * time.Second
 	// defaultExecStartupTimeout bounds the rendezvous, never the command: it
@@ -135,8 +135,8 @@ func (o ExecOptions) normalized() (ExecOptions, error) {
 // The popup runs opts.PayloadPath — by default this executable — as the exec
 // payload: it executes the command on the popup's terminal, where the user sees
 // it live and can type at it, and writes an ExecResult to a FIFO in opts.TempDir
-// when it finishes. CallExec waits on that FIFO, so unlike Run it returns when
-// the *command* is done rather than when the popup launcher is.
+// when it finishes. CallExec waits on that FIFO, so it returns when the
+// *command* is done rather than when the popup launcher is.
 //
 // The wait has two phases. The rendezvous — the payload opening its end of the
 // FIFO, which it does before running anything — is bounded by
@@ -157,15 +157,7 @@ func CallExec(ctx context.Context, backend Backend, opts ExecOptions) (ExecResul
 	if err != nil {
 		return ExecResult{}, err
 	}
-	logger := loggerOrDiscard(opts.Logger)
-
-	var result ExecResult
-	err = withPopupPrepared(ctx, logger, backend, func(ctx context.Context) error {
-		var err error
-		result, err = callExec(ctx, backend, logger, opts)
-		return err
-	})
-	return result, err
+	return callExec(ctx, backend, loggerOrDiscard(opts.Logger), opts)
 }
 
 func callExec(
@@ -180,42 +172,35 @@ func callExec(
 	}
 	logger.Debug("result fifo created", slog.String("path", resultFifo))
 
-	popupCmdStdout := new(bytes.Buffer)
-	popupCmdStderr := new(bytes.Buffer)
-
-	popupCmd, err := startPopup(
+	launcher := &PopupLauncher{Backend: backend, Logger: logger}
+	popup, err := launcher.Exec(
 		ctx,
-		logger,
-		backend,
 		PopupSpec{
 			Title:   opts.Title,
 			Command: slices.Concat(execPayloadArgv(opts, resultFifo), opts.Command),
 		},
-		popupCmdStdout,
-		popupCmdStderr,
+		// No payload stdio is allocated: the command runs on the popup's
+		// terminal, where the user sees it and can type at it, and reports itself
+		// over the result fifo.
+		PopupStreams{},
 	)
 	if err != nil {
 		return ExecResult{}, err
 	}
+	// The exchange outlives the launcher, so the popup is released here instead
+	// of by waiting on it.
+	defer popup.release()
 
 	launcherFailed := make(chan error, 1)
 	go func() {
 		// A launcher that exits successfully says nothing: the floating-pane
 		// backends do that while the payload still runs.
-		if werr := popupCmd.Wait(); werr != nil {
+		if werr := popup.waitLauncher(); werr != nil {
 			launcherFailed <- werr
 		}
 	}()
-	popupFailure := func(werr error) error {
-		return fmt.Errorf(
-			"popup failed: %w: stdout = %s, stderr = %s",
-			werr, popupCmdStdout.String(), popupCmdStderr.String(),
-		)
-	}
 
-	f, err := openResultReader(
-		ctx, logger, resultFifo, launcherFailed, popupFailure, opts.StartupTimeout,
-	)
+	f, err := openResultReader(ctx, logger, resultFifo, launcherFailed, opts.StartupTimeout)
 	if err != nil {
 		return ExecResult{}, err
 	}
@@ -236,7 +221,7 @@ func callExec(
 		gone := errors.New("the popup payload exited without reporting a result")
 		select {
 		case werr := <-launcherFailed:
-			return ExecResult{}, fmt.Errorf("%w: %w", gone, popupFailure(werr))
+			return ExecResult{}, fmt.Errorf("%w: %w", gone, werr)
 		default:
 		}
 		return ExecResult{}, gone
@@ -284,7 +269,6 @@ func openResultReader(
 	logger *slog.Logger,
 	path string,
 	launcherFailed <-chan error,
-	popupFailure func(error) error,
 	startupTimeout time.Duration,
 ) (*os.File, error) {
 	type opened struct {
@@ -315,7 +299,7 @@ wait:
 			logger.Debug("popup launcher failed", slog.Any("err", launcherErr))
 			grace = time.After(execLauncherGrace)
 		case <-grace:
-			abort = popupFailure(launcherErr)
+			abort = launcherErr
 			break wait
 		case <-startup:
 			abort = fmt.Errorf(

@@ -5,6 +5,7 @@
 package tmux
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -13,6 +14,8 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // Options are the coordinates of the tmux server a Client talks to.
@@ -85,6 +88,59 @@ func targeted(sessionId string, args ...string) []string {
 		return args
 	}
 	return append(args, "-t", sessionId)
+}
+
+// launcherWaitDelay is how long a dismissed launcher has to go away on its own
+// before it is killed. A tmux client that ignores its interrupt, or that leaves
+// a child holding the pipes its output is read from, would otherwise be waited
+// on forever.
+const launcherWaitDelay = 2 * time.Second
+
+// Launcher is a running tmux command that opens a popup. Only its exit is of
+// interest: the payload draws on the popup, not on this process's terminal.
+type Launcher struct {
+	cmd  *exec.Cmd
+	line string
+	// The launcher's own output is diagnostics, reported only with a failure.
+	// The two streams are kept apart while tmux writes them and joined only in
+	// that error, where which descriptor carried a message says nothing.
+	stdout, stderr bytes.Buffer
+}
+
+// start runs a tmux command in the background, with the same environment the
+// queries carry. Canceling ctx interrupts it, which is how a popup is dismissed.
+func (c *Client) start(ctx context.Context, args []string) (*Launcher, error) {
+	l := &Launcher{line: c.path + " " + strings.Join(args, " ")}
+	cmd := exec.CommandContext(ctx, c.path, args...)
+	cmd.Cancel = func() error {
+		return cmd.Process.Signal(syscall.SIGINT)
+	}
+	cmd.WaitDelay = launcherWaitDelay
+	cmd.Stdout = &l.stdout
+	cmd.Stderr = &l.stderr
+	if len(c.env) > 0 {
+		cmd.Env = append(os.Environ(), c.env...)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("%s: %w", l.line, err)
+	}
+	l.cmd = cmd
+	return l, nil
+}
+
+// Wait waits for the launcher to exit and decorates a failure with the command
+// that produced it and everything it printed — "no server running on ..." and
+// friends, which are the only trace a popup that never appeared leaves.
+func (l *Launcher) Wait() error {
+	err := l.cmd.Wait()
+	if err == nil {
+		return nil
+	}
+	err = fmt.Errorf("%s: %w", l.line, err)
+	if out := strings.TrimSpace(l.stdout.String() + l.stderr.String()); out != "" {
+		err = fmt.Errorf("%w: %s", err, out)
+	}
+	return err
 }
 
 // run executes a tmux command carrying the same environment the popup command

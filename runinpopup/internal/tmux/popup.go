@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"maps"
 	"slices"
 
@@ -39,6 +40,13 @@ func (c *Client) PopupCommand(req PopupRequest) (path string, args []string) {
 	return c.path, args
 }
 
+// StartPopup runs PopupCommand's argv. display-popup stays for as long as the
+// popup does, so its launcher carries the payload's exit status.
+func (c *Client) StartPopup(ctx context.Context, req PopupRequest) (*Launcher, error) {
+	_, args := c.PopupCommand(req)
+	return c.start(ctx, args)
+}
+
 // PaneRequest is a new-pane invocation. A floating pane belongs to a window
 // rather than to a client, so it is addressed by session; there is no
 // client-targeting flag, because every client viewing the window sees the pane.
@@ -69,6 +77,13 @@ func (c *Client) NewPaneCommand(req PaneRequest) (path string, args []string) {
 	args = append(args, envArgs(req.Env)...)
 	args = append(args, "--", commandLine(req.Command, req.Script))
 	return c.path, args
+}
+
+// StartNewPane runs NewPaneCommand's argv. new-pane returns as soon as the pane
+// exists, so its launcher says nothing about the payload still running in it.
+func (c *Client) StartNewPane(ctx context.Context, req PaneRequest) (*Launcher, error) {
+	_, args := c.NewPaneCommand(req)
+	return c.start(ctx, args)
 }
 
 // envArgs renders an environment as "-e KEY=VALUE" pairs sorted by key, so map

@@ -39,22 +39,22 @@ func (b *TmuxPopup) Name() string {
 	return NameTmuxPopup
 }
 
-// PopupCommand renders the spec as a display-popup targeting this backend's
-// client.
-func (b *TmuxPopup) PopupCommand(spec runinpopup.PopupSpec) (string, []string) {
-	return b.tmux.PopupCommand(tmux.PopupRequest{
+// Launch opens the spec as a display-popup on this backend's client.
+func (b *TmuxPopup) Launch(
+	ctx context.Context,
+	spec runinpopup.LaunchSpec,
+) (runinpopup.PopupHandle, error) {
+	return b.tmux.StartPopup(ctx, b.popupRequest(spec))
+}
+
+func (b *TmuxPopup) popupRequest(spec runinpopup.LaunchSpec) tmux.PopupRequest {
+	return tmux.PopupRequest{
 		ClientId: b.clientId,
 		Title:    spec.Title,
 		Env:      spec.Env,
 		Command:  spec.Command,
 		Script:   spec.Script,
-	})
-}
-
-// Environ sets $TMUX from the session meta when the current process has none.
-// Without $TMUX the popup silently never appears.
-func (b *TmuxPopup) Environ() []string {
-	return b.tmux.Environ()
+	}
 }
 
 // Prepare is a no-op: the tmux 3.7b crash on popup creation over a zoomed pane

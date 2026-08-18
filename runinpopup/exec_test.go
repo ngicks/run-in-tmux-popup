@@ -1,7 +1,6 @@
 package runinpopup
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -302,10 +301,7 @@ func TestRunExecCommand_signalDeathBecomes128PlusSignal(t *testing.T) {
 
 // execBackend is shellBackend wired to re-exec the test binary as the payload.
 func execBackend() *shellBackend {
-	return &shellBackend{
-		environ: []string{execPayloadReexecEnv + "=1"},
-		stdout:  new(bytes.Buffer),
-	}
+	return &shellBackend{environ: []string{execPayloadReexecEnv + "=1"}}
 }
 
 // stubPayload writes an executable stand-in for the payload. Its preamble walks

@@ -2,7 +2,6 @@ package runinpopup
 
 import (
 	"bufio"
-	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -115,9 +114,7 @@ func CallPinentry(ctx context.Context, backend Backend, opts PinentryOptions) er
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeouts.Overall)
 	defer cancel()
 
-	return withPopupPrepared(ctx, logger, backend, func(ctx context.Context) error {
-		return callPinentry(ctx, handshaker, logger, opts)
-	})
+	return callPinentry(ctx, handshaker, logger, opts)
 }
 
 // callPinentry is a mechanical port of internal/popup.CallPinentry. The FIFO
@@ -145,30 +142,18 @@ func callPinentry(
 		return fmt.Errorf("backend %s: building tty handshake: %w", backend.Name(), err)
 	}
 
-	popupCmdStdout := new(bytes.Buffer)
-	popupCmdStderr := new(bytes.Buffer)
-
-	popupCmd, err := startPopup(
-		ctx,
-		logger,
-		backend,
-		handshake.Spec,
-		popupCmdStdout,
-		popupCmdStderr,
-	)
+	launcher := &PopupLauncher{Backend: backend, Logger: logger}
+	// No payload stdio is allocated: the handshake payload announces its tty over
+	// the fifos created above and must keep the popup's terminal untouched, since
+	// that terminal is the whole point of the exchange.
+	popup, err := launcher.Exec(ctx, handshake.Spec, PopupStreams{})
 	if err != nil {
 		return err
 	}
-
-	go func() {
-		<-ctx.Done()
-		_ = popupCmd.Process.Kill()
-		logger.Debug(
-			"popup cmd out:",
-			slog.String("stdout", popupCmdStdout.String()),
-			slog.String("stderr", popupCmdStderr.String()),
-		)
-	}()
+	// This flow outlives the launcher — the popup is dismissed over the done fifo
+	// below, not by waiting for it — so releasing it here is what reaps the
+	// launcher, logs whatever it printed and puts the multiplexer state back.
+	defer popup.release()
 
 	defer func() {
 		logger.Debug("waiting to done fifo")

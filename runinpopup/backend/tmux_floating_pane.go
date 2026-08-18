@@ -43,22 +43,23 @@ func (b *TmuxFloatingPane) Name() string {
 	return NameTmuxFloatingPane
 }
 
-// PopupCommand renders the spec as a floating pane in this backend's session.
-//
-// spec.Title is dropped: new-pane has no title flag.
-func (b *TmuxFloatingPane) PopupCommand(spec runinpopup.PopupSpec) (string, []string) {
-	return b.tmux.NewPaneCommand(tmux.PaneRequest{
+// Launch opens the spec as a floating pane in this backend's session.
+func (b *TmuxFloatingPane) Launch(
+	ctx context.Context,
+	spec runinpopup.LaunchSpec,
+) (runinpopup.PopupHandle, error) {
+	return b.tmux.StartNewPane(ctx, b.paneRequest(spec))
+}
+
+// paneRequest translates the spec for new-pane. spec.Title is dropped: new-pane
+// has no title flag.
+func (b *TmuxFloatingPane) paneRequest(spec runinpopup.LaunchSpec) tmux.PaneRequest {
+	return tmux.PaneRequest{
 		SessionId: b.sessionId,
 		Env:       spec.Env,
 		Command:   spec.Command,
 		Script:    spec.Script,
-	})
-}
-
-// Environ sets $TMUX from the session meta when the current process has none.
-// Without $TMUX the popup silently never appears.
-func (b *TmuxFloatingPane) Environ() []string {
-	return b.tmux.Environ()
+	}
 }
 
 // NewPinentryHandshake uses the shared tmux handshake: new-pane injects the FIFO
@@ -87,13 +88,13 @@ func (b *TmuxFloatingPane) NewPinentryHandshake(
 // restore: by then the session's active pane may still be the popup, and
 // toggling zoom on that would zoom the popup instead of the user's pane.
 //
-// Restore does not wait for the popup, and no caller guarantees it is gone:
-// Run returns as soon as new-pane does, and CallPinentry returns once it has
-// written the done FIFO, without waiting for the pane to act on it. What makes
-// that safe is measured, not ordered — re-zooming while a floating pane is
-// still alive un-floats it into the layout rather than crashing the server. So
-// the worst case is a popup pulled out of its float, most likely on the Run
-// path, where the pane is still alive by construction.
+// Restore does not wait for the popup, and no caller guarantees it is gone: it
+// runs when the launch is released, which for new-pane is long after the
+// launcher returned and may be while the pane still lives — the pinentry
+// exchange releases once it has written the done FIFO, without waiting for the
+// pane to act on it. What makes that safe is measured, not ordered — re-zooming
+// while a floating pane is still alive un-floats it into the layout rather than
+// crashing the server. So the worst case is a popup pulled out of its float.
 func (b *TmuxFloatingPane) Prepare(
 	ctx context.Context,
 ) (func(context.Context) error, error) {

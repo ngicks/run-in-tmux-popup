@@ -2,11 +2,12 @@ package runinpopup
 
 import (
 	"context"
-	"strings"
+	"io"
 )
 
 // PopupSpec is the payload a popup runs: what to execute, with which
-// environment, under which title. Backends translate it into their own argv.
+// environment, under which title. It is a template — it holds no stream and no
+// per-launch state, so one spec can open any number of popups.
 type PopupSpec struct {
 	// Title names the popup window (tmux: -T) or pane (zellij: --name). Empty
 	// leaves the backend's default.
@@ -25,13 +26,42 @@ type PopupSpec struct {
 	Script string
 }
 
-// shellCommandLine renders the spec's payload as a single shell command line,
-// for backends that cannot take an argv.
-func (s PopupSpec) shellCommandLine() string {
-	if s.Script != "" {
-		return s.Script
-	}
-	return shellJoin(s.Command)
+// LaunchSpec is what a backend opens a popup for: one completed launch, built
+// by PopupLauncher from a PopupSpec template. Its command line is final —
+// whatever redirections the payload's stdio needs are already in it — so a
+// backend translates it into its mechanism's argv and starts it, nothing else.
+type LaunchSpec struct {
+	// Title, Env, Command and Script carry the same meaning as their PopupSpec
+	// counterparts.
+	Title   string
+	Env     map[string]string
+	Command []string
+	Script  string
+
+	// Stdin, Stdout and Stderr are the endpoints the payload's stdio is
+	// connected to for this launch, nil meaning "left on the popup's terminal".
+	//
+	// Backends do no piping: the multiplexer runs the payload, not this process,
+	// so the launch layer connects these endpoints to the FIFOs it has already
+	// written into the command line above, and a backend that cannot hand a
+	// payload its stdio directly simply ignores them. The launcher process's own
+	// output is not here at all — it is internal diagnostics, and belongs to
+	// whoever runs the launcher.
+	Stdin  io.ReadCloser
+	Stdout io.WriteCloser
+	Stderr io.WriteCloser
+}
+
+// PopupHandle is a launched popup, waited on by whoever launched it. It is
+// deliberately wait-only: connecting a payload's stdio is the same work for
+// every mechanism, so it lives in the launch layer instead of in each backend.
+type PopupHandle interface {
+	// Wait waits for the popup launcher to exit and reports why it failed.
+	//
+	// The launcher exiting is not the payload finishing: tmux display-popup
+	// stays for as long as the popup, but the floating-pane mechanisms return as
+	// soon as the pane exists.
+	Wait() error
 }
 
 // Backend opens a popup in a terminal multiplexer. Implementations hold the
@@ -41,13 +71,9 @@ type Backend interface {
 	// Name reports the backend's name, one of the names defined by the backend
 	// package.
 	Name() string
-	// PopupCommand returns the argv that opens a popup executing spec. It only
-	// builds the command line — nothing is executed, so it is cheap and testable.
-	PopupCommand(spec PopupSpec) (path string, args []string)
-	// Environ returns "KEY=VALUE" adjustments the popup command needs on top of
-	// the current process environment (tmux-popup needs $TMUX set from the
-	// session meta, or the popup never appears), or nil when it needs none.
-	Environ() []string
+	// Launch opens a popup running spec and returns a handle on the launcher.
+	// Canceling ctx dismisses the popup.
+	Launch(ctx context.Context, spec LaunchSpec) (PopupHandle, error)
 	// Prepare adjusts multiplexer state that would break — or crash — popup
 	// creation, and returns a func restoring that state once the popup is gone.
 	// Both may be no-ops: a nil restore means "nothing to undo", and is the
@@ -63,18 +89,4 @@ type Backend interface {
 	//     context that outlives the popup's cancellation, and log its error
 	//     rather than failing the run.
 	Prepare(ctx context.Context) (restore func(context.Context) error, err error)
-}
-
-// shellQuote renders s as a single POSIX shell word.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// shellJoin renders an argv as a shell command line that executes it unchanged.
-func shellJoin(args []string) string {
-	quoted := make([]string, len(args))
-	for i, a := range args {
-		quoted[i] = shellQuote(a)
-	}
-	return strings.Join(quoted, " ")
 }

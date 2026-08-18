@@ -36,21 +36,23 @@ func (b *Zellij) Name() string {
 	return NameZellij
 }
 
-// PopupCommand renders the spec as a floating pane in this backend's session.
-func (b *Zellij) PopupCommand(spec runinpopup.PopupSpec) (string, []string) {
-	return b.zellij.RunCommand(zellij.RunRequest{
+// Launch opens the spec as a floating pane in this backend's session. zellij
+// takes the session as a flag, so the launcher needs no environment of its own.
+func (b *Zellij) Launch(
+	ctx context.Context,
+	spec runinpopup.LaunchSpec,
+) (runinpopup.PopupHandle, error) {
+	return b.zellij.StartRun(ctx, b.runRequest(spec))
+}
+
+func (b *Zellij) runRequest(spec runinpopup.LaunchSpec) zellij.RunRequest {
+	return zellij.RunRequest{
 		SessionId: b.sessionId,
 		Title:     spec.Title,
 		Env:       spec.Env,
 		Command:   spec.Command,
 		Script:    spec.Script,
-	})
-}
-
-// Environ returns nil: zellij takes the session as a flag, so the popup command
-// needs no environment of its own.
-func (b *Zellij) Environ() []string {
-	return nil
+	}
 }
 
 // Prepare is a no-op: nothing in zellij's floating-pane creation depends on the

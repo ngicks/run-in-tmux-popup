@@ -5,11 +5,16 @@
 package zellij
 
 import (
+	"bytes"
 	"cmp"
+	"context"
 	"fmt"
 	"maps"
+	"os/exec"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/shellargv"
 )
@@ -66,6 +71,61 @@ func (c *Client) RunCommand(req RunRequest) (path string, args []string) {
 	}
 	args = append(args, "--floating", "--close-on-exit", "--pinned=true", "--")
 	return c.path, append(args, c.payload(req)...)
+}
+
+// StartRun runs RunCommand's argv. "zellij run" returns as soon as the floating
+// pane exists, so its launcher says nothing about the payload still running in
+// it.
+func (c *Client) StartRun(ctx context.Context, req RunRequest) (*Launcher, error) {
+	_, args := c.RunCommand(req)
+
+	l := &Launcher{line: c.path + " " + strings.Join(args, " ")}
+	cmd := exec.CommandContext(ctx, c.path, args...)
+	// SIGINT rather than the default kill: it is what dismisses a pane, and
+	// zellij gets to tear its client down itself.
+	cmd.Cancel = func() error {
+		return cmd.Process.Signal(syscall.SIGINT)
+	}
+	cmd.WaitDelay = launcherWaitDelay
+	cmd.Stdout = &l.stdout
+	cmd.Stderr = &l.stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("%s: %w", l.line, err)
+	}
+	l.cmd = cmd
+	return l, nil
+}
+
+// launcherWaitDelay is how long a dismissed launcher has to go away on its own
+// before it is killed. A zellij client that ignores its interrupt, or that
+// leaves a child holding the pipes its output is read from, would otherwise be
+// waited on forever.
+const launcherWaitDelay = 2 * time.Second
+
+// Launcher is a running zellij command that opens a floating pane. Only its exit
+// is of interest: the payload draws on the pane, not on this process's terminal.
+type Launcher struct {
+	cmd  *exec.Cmd
+	line string
+	// The launcher's own output is diagnostics, reported only with a failure.
+	// The two streams are kept apart while zellij writes them and joined only in
+	// that error, where which descriptor carried a message says nothing.
+	stdout, stderr bytes.Buffer
+}
+
+// Wait waits for the launcher to exit and decorates a failure with the command
+// that produced it and everything it printed, which is the only trace a pane
+// that never appeared leaves.
+func (l *Launcher) Wait() error {
+	err := l.cmd.Wait()
+	if err == nil {
+		return nil
+	}
+	err = fmt.Errorf("%s: %w", l.line, err)
+	if out := strings.TrimSpace(l.stdout.String() + l.stderr.String()); out != "" {
+		err = fmt.Errorf("%w: %s", err, out)
+	}
+	return err
 }
 
 // payload renders what the pane executes. zellij runs an argv directly, so a

@@ -9,23 +9,30 @@ Hermeticity verified by running the default suite with unusable
 tmux/zellij stubs first in PATH; `go vet` clean with and without the
 `integration` tag.
 
-Finding recorded during step 1 (pre-existing, deliberately not fixed):
-`go test -race` fails on the new pinentry tests — `callPinentry` reads
-the popup launcher's stdout/stderr buffers while os/exec copier
-goroutines may still write (no `Wait` on the launcher, so no
-happens-before edge); the launcher `exec.Cmd` is also never waited on
-(goroutine/fd/zombie leak per call). Both are owned by the step 4–5
-restructure of the launch/pinentry flow.
+Step 2 landed 2026-08-18 as three commits: internal tmux/zellij clients
+(+ shared `internal/shellargv` quoting), backend name vocabulary moved
+into `runinpopup/backend` (parent symbols deleted, error bytes verified
+identical), and the contract break + launch layer (`Backend.Launch` +
+wait-only `PopupHandle` replace `PopupCommand`/`Environ`; exported
+`PopupLauncher.Exec` → `PopupCommand` with per-stream "nil = no
+allocation" FIFO wiring and `StdoutPipe`/`StderrPipe`; `Run`/`RunOptions`
+deleted; `CallExec`/`CallPinentry` now drive the launch layer with
+all-nil streams). Both step-1 race findings are fixed as a natural
+consequence: the launcher is always reaped and its output buffers are
+read only after `Wait` — `go test -race ./...` is green. Noted
+deviations: exec's launcher-failure error tail now comes decorated by
+the internal client (pinned substrings preserved); launcher teardown is
+SIGINT then SIGKILL after 2s; `Prepare` runs after FIFO creation in
+`callPinentry` (unobservable). New dep: golang.org/x/sync (errgroup).
 
-Next action: step 2 (internal tmux/zellij clients, backend vocabulary
-move, `Launch`/`PopupHandle` contract break, `PopupLauncher`/`PopupCommand`
-launch layer, delete `Run`/`RunOptions`).
+Next action: step 3 (CLI runtime/backend resolver in
+`cmd/run-in-popup/commands/runtime.go`).
 
 ## Checklist
 
 - [x] Step 1 — hermetic test split + pinentry characterization (P0: "An
       Assuan transcript test proves the exact bytes forwarded to pinentry")
-- [ ] Step 2 — internal clients + vocabulary + contract break (D6: "delegate
+- [x] Step 2 — internal clients + vocabulary + contract break (D6: "delegate
       executable operations to those internal clients"; D4: "own backend
       names, enumeration, detection, and construction"; D7: "raw argv and
       process environment are no longer part of the public backend contract";

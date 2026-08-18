@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/shellargv"
 )
 
 // popupTTY is the tty the fake popup announces. It never has to exist: the
@@ -111,13 +113,13 @@ func (b *ttyHandshakeBackend) NewPinentryHandshake(
 
 func announceThenWait(ttyFifo, doneFifo string) string {
 	return fmt.Sprintf("echo %s >> %s && read done < %s",
-		shellQuote(popupTTY), shellQuote(ttyFifo), shellQuote(doneFifo))
+		shellargv.Quote(popupTTY), shellargv.Quote(ttyFifo), shellargv.Quote(doneFifo))
 }
 
 // announceThenExit is a popup that goes away the moment it has reported its
 // tty, the way a dismissed one does.
 func announceThenExit(ttyFifo, _ string) string {
-	return fmt.Sprintf("echo %s >> %s", shellQuote(popupTTY), shellQuote(ttyFifo))
+	return fmt.Sprintf("echo %s >> %s", shellargv.Quote(popupTTY), shellargv.Quote(ttyFifo))
 }
 
 // staysSilent is a popup that is alive but never reports anything, so only the
@@ -143,7 +145,7 @@ func newPinentryProxy(t *testing.T, mode string) *pinentryProxy {
 	dir := t.TempDir()
 	p := &pinentryProxy{
 		dir:        dir,
-		backend:    &ttyHandshakeBackend{shellBackend: shellBackend{stdout: new(bytes.Buffer)}},
+		backend:    new(ttyHandshakeBackend),
 		transcript: filepath.Join(dir, "transcript"),
 		pidfile:    filepath.Join(dir, "pinentry.pid"),
 		doneFifo:   filepath.Join(dir, "done"),
@@ -282,6 +284,18 @@ func fdsPointingAt(t *testing.T, path string) int {
 		}
 	}
 	return n
+}
+
+func TestCallPinentry_requiresHandshaker(t *testing.T) {
+	err := CallPinentry(t.Context(), &shellBackend{}, PinentryOptions{
+		TempDir: t.TempDir(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "PinentryHandshaker") {
+		t.Fatalf("err = %v, want it to name the missing interface", err)
+	}
+	if err := CallPinentry(t.Context(), new(ttyHandshakeBackend), PinentryOptions{}); err == nil {
+		t.Fatal("an unset TempDir must be rejected")
+	}
 }
 
 // The one line gpg-agent sends that the proxy exists to rewrite: pinentry must
