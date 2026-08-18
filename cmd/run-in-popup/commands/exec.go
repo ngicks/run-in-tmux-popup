@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"cmp"
 	"errors"
 	"log/slog"
 	"os"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
-	"github.com/ngicks/run-in-tmux-popup/runinpopup/backend"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/cli"
 )
 
@@ -88,36 +86,18 @@ func runExec(
 	if err != nil {
 		return err
 	}
-	cfg = execFlagOverrides(cmd, flagBackend).Apply(cfg)
 
-	userData := runinpopup.ParsePinentryUserData(os.Getenv("PINENTRY_USER_DATA"))
-
-	backendName := cfg.DefaultBackend
-	if backendName == "" {
-		backendName, err = backend.DetectName(
-			userData.Kind,
-			os.Getenv("TMUX"),
-			os.Getenv("ZELLIJ"),
-		)
-		if err != nil {
-			return err
-		}
-	}
-	popupBackend, err := backend.New(backendName, backend.Options{
-		BinaryPath:  userData.Path,
-		SessionId:   userData.SessionId,
-		ClientId:    userData.ClientId,
-		SessionMeta: userData.SessionMeta,
-		TMUX:        os.Getenv("TMUX"),
-		Shell:       cmp.Or(os.Getenv("SHELL"), "bash"),
-	})
+	rt, err := resolveRuntime(runtimeInputs{
+		Config:    cfg,
+		Overrides: execFlagOverrides(cmd, flagBackend),
+	}, os.Environ())
 	if err != nil {
 		return err
 	}
 
 	workspace, err := runworkspace.Open(
 		"run-in-popup-exec-*",
-		userData.Debug(),
+		rt.UserData.Debug(),
 		contextkey.ValueSlogLoggerFallback(ctx, slog.Default()),
 	)
 	if err != nil {
@@ -125,7 +105,7 @@ func runExec(
 	}
 	defer workspace.Close()
 
-	result, err := runinpopup.CallExec(ctx, popupBackend, runinpopup.ExecOptions{
+	result, err := runinpopup.CallExec(ctx, rt.Backend, runinpopup.ExecOptions{
 		Logger:  workspace.Logger,
 		TempDir: workspace.Dir,
 		Command: command,

@@ -25,8 +25,18 @@ the internal client (pinned substrings preserved); launcher teardown is
 SIGINT then SIGKILL after 2s; `Prepare` runs after FIFO creation in
 `callPinentry` (unobservable). New dep: golang.org/x/sync (errgroup).
 
-Next action: step 3 (CLI runtime/backend resolver in
-`cmd/run-in-popup/commands/runtime.go`).
+Step 3 landed 2026-08-18: `resolveRuntime(inputs, environ)` in
+`cmd/run-in-popup/commands/runtime.go` single-homes backend precedence
+and `backend.Options` construction; both commands call it. One sketch
+deviation, forced by the purity requirement: `runtimeInputs` carries
+`Config` + `Overrides` (merged inside the resolver) instead of
+`ConfigPath` — `LoadConfig` stays in the commands so the resolver reads
+no files/env. The two commands' old resolution paths were verified
+statement-identical, so no per-command behavior fork was needed.
+Precedence table asserts full error bytes and was verified by mutation.
+
+Next action: step 4 (popup session + JsonIpcLauncher; migrate exec,
+dissolve ExecOptions/CallExec).
 
 ## Checklist
 
@@ -41,7 +51,7 @@ Next action: step 3 (CLI runtime/backend resolver in
       spec, streams)` returns `*PopupCommand` with `Wait` +
       `StdoutPipe`/`StderrPipe`; launcher-owned pipe goroutines connect
       FIFOs to the passed endpoints)
-- [ ] Step 3 — CLI runtime resolver (D5: "Proceed with the P1 CLI
+- [x] Step 3 — CLI runtime resolver (D5: "Proceed with the P1 CLI
       runtime/backend-resolution extraction")
 - [ ] Step 4 — popup session; exec migrated onto `JsonIpcLauncher` with
       `Out = ExecResult` (D1: "must not duplicate the lifecycle"; D15:

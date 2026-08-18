@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"cmp"
 	"log/slog"
 	"os"
 
@@ -10,7 +9,6 @@ import (
 
 	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
-	"github.com/ngicks/run-in-tmux-popup/runinpopup/backend"
 )
 
 const pinentryLong = `pinentry proxies the Assuan exchange gpg-agent runs over stdin/stdout to a
@@ -92,52 +90,32 @@ func runPinentry(
 	if err != nil {
 		return err
 	}
-	cfg = pinentryFlagOverrides(cmd, flagBackend, flagPinentry).Apply(cfg)
 
-	userData := runinpopup.ParsePinentryUserData(os.Getenv("PINENTRY_USER_DATA"))
-
-	backendName := cfg.DefaultBackend
-	if backendName == "" {
-		backendName, err = backend.DetectName(
-			userData.Kind,
-			os.Getenv("TMUX"),
-			os.Getenv("ZELLIJ"),
-		)
-		if err != nil {
-			return err
-		}
-	}
-	popupBackend, err := backend.New(backendName, backend.Options{
-		BinaryPath:  userData.Path,
-		SessionId:   userData.SessionId,
-		ClientId:    userData.ClientId,
-		SessionMeta: userData.SessionMeta,
-		TMUX:        os.Getenv("TMUX"),
-		// $SHELL rather than the library's "sh": the popup payload is the user's
-		// login shell in every released version of this tool.
-		Shell: cmp.Or(os.Getenv("SHELL"), "bash"),
-	})
+	rt, err := resolveRuntime(runtimeInputs{
+		Config:    cfg,
+		Overrides: pinentryFlagOverrides(cmd, flagBackend, flagPinentry),
+	}, os.Environ())
 	if err != nil {
 		return err
 	}
 
 	workspace, err := runworkspace.Open(
 		"run-in-popup-pinentry-*",
-		userData.Debug(),
+		rt.UserData.Debug(),
 		contextkey.ValueSlogLoggerFallback(ctx, slog.Default()),
 	)
 	if err != nil {
 		return err
 	}
 	defer workspace.Close()
-	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", userData))
+	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", rt.UserData))
 
-	return runinpopup.CallPinentry(ctx, popupBackend, runinpopup.PinentryOptions{
+	return runinpopup.CallPinentry(ctx, rt.Backend, runinpopup.PinentryOptions{
 		Logger:       workspace.Logger,
 		TempDir:      workspace.Dir,
-		PinentryPath: cfg.PinentryPath,
+		PinentryPath: rt.Config.PinentryPath,
 		PinentryArgs: args,
-		Timeouts:     cfg.Timeouts,
+		Timeouts:     rt.Config.Timeouts,
 	})
 }
 
