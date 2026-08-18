@@ -369,28 +369,84 @@ A few other differences worth knowing:
 The logic lives in `runinpopup` and is importable:
 
 ```go
-import "github.com/ngicks/run-in-tmux-popup/runinpopup"
+import (
+	"github.com/ngicks/run-in-tmux-popup/runinpopup"
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/backend"
+)
 ```
 
-`Run` opens a popup and executes an arbitrary command in it; `CallPinentry` is
-the pinentry proxy layered on the same mechanism, and `CallExec` is the exec
-round trip, which pairs with `ExecPayload` on the popup side. Backends are
-constructed explicitly (`NewTmuxPopupBackend`, `NewTmuxFloatingPaneBackend`,
-`NewZellijBackend`, or `NewBackend` by name) from values the caller supplies —
-the package never reads the environment on its own.
+Backends are built from coordinates the caller supplies: `backend.New(name,
+backend.Options)`, with `backend.Names()` listing the valid names and
+`backend.DetectName(userDataKind, tmuxEnv, zellijEnv)` picking one from the same
+hints the CLI uses. Detection is pure and so is construction: the caller reads
+the environment and passes the hints in, and a backend holds only what it was
+handed. (`LoadConfig` is the one exception, and reading `$RUN_IN_POPUP_*` is its
+whole job.)
 
-`Backend.Prepare` is where a backend fixes up multiplexer state a popup would
-otherwise break — the tmux de-zoom above is its one implementation — and returns
-a restore func every entry point calls on the way out.
+`PopupLauncher` is the launch layer. It holds the `Backend` and everything a
+launch needs beyond the payload itself — `Logger`, `Workspace` for the directory
+the payload's FIFOs live in, `StartupTimeout` for the rendezvous with the payload
+(30 s when zero) — and `Exec(ctx, PopupSpec, PopupStreams)` opens one popup and
+hands back a `*PopupCommand`:
 
-None of them waits for the popup to be gone first. `Run` returns as soon as
-`new-pane` does, while the pane it created is still alive; `CallPinentry`
-returns once it has written the done FIFO, without waiting for the pane to act
-on it; `CallExec` returns once the result is on the FIFO, which the payload
-writes just before it exits. With `tmux-floating-pane` the re-zoom can therefore
-land on a live floating pane, which tmux answers by pulling that pane out of its
-float and into the layout — not by crashing. That is the guarantee this relies
-on; it is not an ordering guarantee.
+```go
+name, err := backend.DetectName("", os.Getenv("TMUX"), os.Getenv("ZELLIJ"))
+if err != nil {
+	return err
+}
+b, err := backend.New(name, backend.Options{
+	TMUX:      os.Getenv("TMUX"),
+	SessionId: os.Getenv("ZELLIJ_SESSION_NAME"),
+})
+if err != nil {
+	return err
+}
+
+launcher := &runinpopup.PopupLauncher{Backend: b}
+popup, err := launcher.Exec(
+	ctx,
+	runinpopup.PopupSpec{Title: "build", Command: []string{"go", "build", "./..."}},
+	runinpopup.PopupStreams{}, // no stream named: stdio stays on the popup's terminal
+)
+if err != nil {
+	return err
+}
+return popup.Wait()
+```
+
+`PopupStreams` decides where the payload's stdio goes, under one rule per stream:
+nil leaves it on the popup's terminal, where the user sees it and can type at it,
+and a non-nil endpoint gets a FIFO relayed to it. `StdoutPipe`/`StderrPipe` ask
+for a reader instead, handed back by `PopupCommand.StdoutPipe` / `StderrPipe` —
+os/exec style, so read them to EOF before `Wait`.
+
+The two exchanges layer a protocol on that. `PinentryLauncher.Call(ctx)` is the
+pinentry proxy; it needs a `PopupLauncher` whose `Backend` also implements
+`TTYHandshaker`, since the popup has to report the terminal it runs on.
+`JsonIpcLauncher[In, Out].Exec(ctx, v)` is the JSON round trip: it returns a
+`*JsonIpcConn[In, Out]` whose `Results()` yields the `Out` values decoded from the
+payload's stdout — drain it, the payload blocks on its own stdout otherwise — and
+whose `Wait` reports how the exchange ended. Input travels one of two ways: the
+launcher's `AddPayload` marshals the launch-time value into the popup's command
+line, or, without one, the payload's stdin becomes a FIFO and `Send` carries the
+values. `run-in-popup exec` is a `JsonIpcLauncher[[]string, ExecResult]` whose
+popup side is `ExecPayload`.
+
+A `Backend` itself is small: `Name`, `Launch` and `Prepare`. `Prepare` is where a
+backend fixes up multiplexer state a popup would otherwise break — the tmux
+de-zoom above is its one implementation — and returns a restore func the launch
+runs when the popup is released. `TTYHandshaker` extends it with
+`NewTTYHandshake`, built per backend because the popup mechanism decides how the
+payload learns the FIFO paths.
+
+Nothing here waits for the popup to be gone. `PopupCommand.Wait` returns once the
+popup *launcher* has exited and the streams it was handed endpoints for have
+ended — and the launcher exiting is not the payload finishing: the floating-pane
+mechanisms return as soon as the pane exists, so a caller that needs to know when
+the payload is done has the payload tell it, as both exchanges do over their own
+FIFOs. The restore can therefore land on a live floating pane, which tmux answers
+by pulling that pane out of its float and into the layout — not by crashing. That
+is the guarantee this relies on; it is not an ordering guarantee.
 
 ### But why?
 
