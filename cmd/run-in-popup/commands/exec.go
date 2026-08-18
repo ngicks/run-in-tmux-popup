@@ -11,6 +11,7 @@ import (
 	"github.com/ngicks/go-common/contextkey"
 	"github.com/spf13/cobra"
 
+	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/cli"
 )
@@ -32,6 +33,10 @@ worked — the command's own status is exit_code, not this process's.
 auto-detection from PINENTRY_USER_DATA, then $TMUX (which selects tmux-popup;
 tmux floating panes stay an explicit choice), then $ZELLIJ. Everything after
 "--" is the command and is passed through unchanged.`
+
+// execWorkspacePrefix names the directory holding one run's payload FIFOs, and
+// its debug log when the run has one.
+const execWorkspacePrefix = "run-in-popup-exec-"
 
 const execExample = `  run-in-popup exec -- make test
   run-in-popup exec --title build -- go build ./...
@@ -76,7 +81,7 @@ func runExec(
 	cmd *cobra.Command,
 	args []string,
 	flagConfig, flagBackend, flagTitle string,
-) error {
+) (err error) {
 	ctx := cmd.Context()
 
 	command, err := execCommandArgs(cmd, args)
@@ -102,13 +107,26 @@ func runExec(
 		return fmt.Errorf("locating this executable for the exec payload: %w", err)
 	}
 
+	workspace, err := runworkspace.Open(
+		execWorkspacePrefix,
+		rt.UserData.Debug(),
+		contextkey.ValueSlogLoggerFallback(ctx, slog.Default()),
+	)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// A debug log that would not close is worth reporting, but never worth
+		// hiding how the exchange itself went.
+		if cerr := workspace.Close(); err == nil {
+			err = cerr
+		}
+	}()
+
 	popup := &runinpopup.PopupLauncher{
-		Backend: rt.Backend,
-		Logger:  contextkey.ValueSlogLoggerFallback(ctx, slog.Default()),
-		Workspace: runinpopup.WorkspaceOptions{
-			NamePrefix: "run-in-popup-exec-",
-			Retain:     rt.UserData.Debug(),
-		},
+		Backend:   rt.Backend,
+		Logger:    workspace.Logger,
+		Workspace: workspace.Options,
 	}
 	exchange := &runinpopup.JsonIpcLauncher[[]string, runinpopup.ExecResult]{
 		Popup:       popup,

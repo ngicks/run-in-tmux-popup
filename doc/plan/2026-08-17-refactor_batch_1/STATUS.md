@@ -74,8 +74,25 @@ tty. Known iopipe quirk recorded in stdio.go: a Writer's completion
 channel can report nil for a failing write, so output failures surface
 through cmd.Wait, input failures through close().
 
-Next action: steps 6 and 7 in parallel (disjoint files): legacyshim +
-runworkspace ownership; mechanical exec.go split.
+Steps 6 and 7 landed 2026-08-18 (parallel workers, disjoint files).
+Step 7: `exec.go`/`exec_test.go` split into
+`exec_types.go`/`exec_payload.go`/`exec_status.go` + per-half test
+files and `main_test.go` (the shared TestMain dispatch); `go doc -all`
+output byte-identical; no `exec_caller.go` — the caller half is the
+generic `JsonIpcLauncher` in `jsonipc.go`, which the types header
+points at. Step 6: `internal/legacyshim.Shim.Run` runs both deprecated
+binaries (mains are ~40-line adapters); `internal/runworkspace` shrank
+to debug-log policy via `Open(prefix, debug, fallback)` returning
+`WorkspaceOptions` + logger — non-debug creates nothing (launch owns
+the dir), debug keeps dir + log.txt; both recorded defects fixed
+(rollback on log-open failure, Close error surfaced at all call
+sites without displacing a primary error). Shim CLI surface verified
+byte-identical against pre-edit binaries across 16 scenarios each.
+Step 4's open item is resolved: exec debug runs write log.txt again
+through the same helper.
+
+Next action: step 8 (config schema source + residue cleanup), then the
+final review/test gate.
 
 ## Checklist
 
@@ -101,10 +118,10 @@ runworkspace ownership; mechanical exec.go split.
       process execution"; D3: "iopipe … rather than an ad hoc os.Pipe plus an
       unowned goroutine"; D13: "`PinentryLauncher`"; D12 applied to the
       pinentry exchange surface)
-- [ ] Step 6 — legacyshim + workspace ownership (D11: "extract an
+- [x] Step 6 — legacyshim + workspace ownership (D11: "extract an
       `internal/legacyshim` runner … each `main.go` becomes a tiny adapter";
       D1: shims no longer create their own run directories)
-- [ ] Step 7 — mechanical exec split (P2: "exported API and JSON are
+- [x] Step 7 — mechanical exec split (P2: "exported API and JSON are
       byte-for-byte unchanged")
 - [ ] Step 8 — config schema source + residue cleanup (P2: "one clear
       test/generation failure at every contract"; P3 residue)

@@ -87,7 +87,7 @@ func runPinentry(
 	cmd *cobra.Command,
 	args []string,
 	flagConfig, flagBackend, flagPinentry string,
-) error {
+) (err error) {
 	ctx := cmd.Context()
 
 	cfg, err := runinpopup.LoadConfig(flagConfig)
@@ -103,28 +103,28 @@ func runPinentry(
 		return err
 	}
 
-	logger := contextkey.ValueSlogLoggerFallback(ctx, slog.Default())
-	popupWorkspace := runinpopup.WorkspaceOptions{NamePrefix: pinentryWorkspacePrefix}
-	if rt.UserData.Debug() {
-		// A debug run is told to look for log.txt in the directory holding the
-		// handshake FIFOs, and to find it still there afterwards. The log file has
-		// to exist before the exchange starts, so a debug run creates that
-		// directory itself and hands it over as a caller-owned one — which the
-		// exchange uses and never removes.
-		workspace, err := runworkspace.Open(pinentryWorkspacePrefix+"*", true, logger)
-		if err != nil {
-			return err
-		}
-		defer workspace.Close()
-		logger, popupWorkspace = workspace.Logger, runinpopup.WorkspaceOptions{Dir: workspace.Dir}
+	workspace, err := runworkspace.Open(
+		pinentryWorkspacePrefix,
+		rt.UserData.Debug(),
+		contextkey.ValueSlogLoggerFallback(ctx, slog.Default()),
+	)
+	if err != nil {
+		return err
 	}
-	logger.Info("PINENTRY_USER_DATA", slog.Any("data", rt.UserData))
+	defer func() {
+		// A debug log that would not close is worth reporting, but never worth
+		// hiding how the exchange itself went.
+		if cerr := workspace.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", rt.UserData))
 
 	pinentry := &runinpopup.PinentryLauncher{
 		Popup: &runinpopup.PopupLauncher{
 			Backend:   rt.Backend,
-			Logger:    logger,
-			Workspace: popupWorkspace,
+			Logger:    workspace.Logger,
+			Workspace: workspace.Options,
 		},
 		PinentryPath: rt.Config.PinentryPath,
 		PinentryArgs: args,

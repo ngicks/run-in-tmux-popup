@@ -9,75 +9,30 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 
-	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
+	"github.com/ngicks/run-in-tmux-popup/internal/legacyshim"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/backend"
 )
 
-const deprecationNotice = "tmux-popup-pinentry-curses is deprecated;" +
-	` run "run-in-popup pinentry --backend tmux-popup" instead.`
-
 func main() {
-	// stderr only: stdout carries the Assuan exchange with gpg-agent, and any
-	// stray byte there breaks the protocol.
-	fmt.Fprintln(os.Stderr, deprecationNotice)
-	if err := run(); err != nil {
+	shim := legacyshim.Shim{
+		Name:            "tmux-popup-pinentry-curses",
+		Replacement:     "run-in-popup pinentry --backend tmux-popup",
+		UserDataFormat:  "TMUX_POPUP:tmux_path:session_id:client_id",
+		WorkspacePrefix: "tmux-popup-pinentry-curses-",
+		NewBackend: func(userData runinpopup.PinentryUserData) (runinpopup.Backend, error) {
+			return backend.NewTmuxPopup(backend.Options{
+				BinaryPath:  userData.Path,
+				ClientId:    userData.ClientId,
+				SessionMeta: userData.SessionMeta,
+				TMUX:        os.Getenv("TMUX"),
+			})
+		},
+	}
+	if err := shim.Run(context.Background(), os.Args[1:], os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-}
-
-func run() error {
-	ctx, stop := signal.NotifyContext(
-		context.Background(),
-		syscall.SIGINT, syscall.SIGTERM, syscall.SIGABRT,
-	)
-	defer stop()
-
-	userData := runinpopup.ParsePinentryUserData(os.Getenv("PINENTRY_USER_DATA"))
-	if userData.Path == "" || userData.SessionId == "" {
-		return fmt.Errorf(
-			"environment variable %q must be formatted as"+
-				" \"TMUX_POPUP:tmux_path:session_id:client_id\" but is %q",
-			"PINENTRY_USER_DATA", os.Getenv("PINENTRY_USER_DATA"),
-		)
-	}
-
-	popupBackend, err := backend.NewTmuxPopup(backend.Options{
-		BinaryPath:  userData.Path,
-		ClientId:    userData.ClientId,
-		SessionMeta: userData.SessionMeta,
-		TMUX:        os.Getenv("TMUX"),
-	})
-	if err != nil {
-		return err
-	}
-
-	workspace, err := runworkspace.Open(
-		"tmux-popup-pinentry-curses-*",
-		userData.Debug() || os.Getenv("TMUX_POPUP_DEBUG") == "1",
-		slog.New(slog.NewTextHandler(os.Stderr, nil)),
-	)
-	if err != nil {
-		return err
-	}
-	defer workspace.Close()
-	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", userData))
-
-	pinentry := &runinpopup.PinentryLauncher{
-		Popup: &runinpopup.PopupLauncher{
-			Backend: popupBackend,
-			Logger:  workspace.Logger,
-			// The workspace this binary opened, whose lifetime it keeps owning:
-			// removing it is what its own Close does, debug runs included.
-			Workspace: runinpopup.WorkspaceOptions{Dir: workspace.Dir},
-		},
-		PinentryArgs: os.Args[1:],
-	}
-	return pinentry.Call(ctx)
 }
