@@ -81,7 +81,9 @@ func (o WorkspaceOptions) open(logger *slog.Logger) (dir string, release func(),
 // that stdio stays on the popup's terminal, where the user sees it and can type
 // at it; non-nil means a FIFO is allocated in the launch's workspace, redirected
 // into the popup's command line, and connected to the given endpoint. The launch
-// closes every endpoint it was handed once its stream has ended.
+// closes every endpoint it was handed once its stream has ended; when Exec
+// itself returns an error the endpoints were never adopted and stay the
+// caller's to close.
 type PopupStreams struct {
 	Stdin  io.ReadCloser
 	Stdout io.WriteCloser

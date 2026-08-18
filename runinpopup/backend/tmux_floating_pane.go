@@ -91,8 +91,9 @@ func (b *TmuxFloatingPane) NewTTYHandshake(
 // Restore does not wait for the popup, and no caller guarantees it is gone: it
 // runs when the launch is released, which for new-pane is long after the
 // launcher returned and may be while the pane still lives — the pinentry
-// exchange releases once it has written the done FIFO, without waiting for the
-// pane to act on it. What makes that safe is measured, not ordered — re-zooming
+// exchange releases once it has written the done FIFO, and the JSON-IPC
+// exchange once its result stream ends, neither waiting for the pane to act
+// on it. What makes that safe is measured, not ordered — re-zooming
 // while a floating pane is still alive un-floats it into the layout rather than
 // crashing the server. So the worst case is a popup pulled out of its float.
 func (b *TmuxFloatingPane) Prepare(

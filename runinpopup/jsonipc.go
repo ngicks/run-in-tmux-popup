@@ -175,7 +175,9 @@ func (c *JsonIpcConn[In, Out]) Results() <-chan Out {
 // The launcher's own exit status is not part of that error: with tmux
 // display-popup the launcher carries the payload's status, so a command that
 // exited non-zero would otherwise fail an exchange that went perfectly well. A
-// launcher failure only speaks for an exchange the payload never answered.
+// launcher failure decides the exchange only while the output stream has not
+// ended — in practice an exchange the payload never answered, though a dead
+// popup can also cut short a stream that had already delivered values.
 func (c *JsonIpcConn[In, Out]) Wait() error {
 	<-c.ended
 	c.popup.release()

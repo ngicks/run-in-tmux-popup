@@ -1,6 +1,22 @@
 # STATUS — refactor batch 1
 
-State: **in progress** — step 1 landed 2026-08-18: six hermetic
+State: **done** — all eight steps implemented and committed 2026-08-18;
+final gate passed: full suite (`-race -count=2 ./...` included),
+hermeticity with unusable tmux/zellij stubs, both vet tag sets,
+golangci-lint clean; multi-focus review verdict approve-with-nits, no
+blocking defects, three one-sentence doc fixes applied. Remaining
+follow-ups (recorded, deliberately not done in this batch): the stdin
+relay's error is unreachable for a streamed `JsonIpcLauncher` exchange
+(`Send` sees a bare `io.ErrClosedPipe`, `Wait` can stay nil — needs the
+conn to consume the endpoint waits); `launch.go` at 569 lines wants the
+same by-responsibility split `exec.go` got; nothing automates
+`go test -tags integration`; `JsonIpcConn` has no `CloseSend`; a
+SIGKILLed exec caller can leave the popup shell blocked in open(2);
+a live pinentry-curses smoke test on a real tmux host remains the one
+unverified confidence gap for the pinentry fd-topology change; README
+omits `config --format` and the `version` subcommand (pre-existing).
+
+Step 1 landed 2026-08-18: six hermetic
 characterization tests for `callPinentry` (fake handshaking backend +
 fake pinentry via the test binary; three unexported stdio seams on
 `PinentryOptions`), live tmux tests moved behind `//go:build integration`,
@@ -103,9 +119,10 @@ scaffold field. `Apply` stays hand-written (two branches + delegate;
 codegen judged not worth it). Scaffold TODOs in root.go removed. Config
 file schema/JSON bytes unchanged.
 
-All eight steps are done. Next action: refresh README's stale Library
-section (describes the removed pre-break API), then the final
-ng-reviewer + ng-test-runner gate.
+The README Library section was rewritten against the real surface
+(example compile-checked) and the final gate ran green; see the State
+block above for the follow-up list. No next action — the batch is
+complete.
 
 ## Checklist
 
