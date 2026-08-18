@@ -7,7 +7,7 @@ import (
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/tmux"
 )
 
-var _ runinpopup.PinentryHandshaker = (*TmuxPopup)(nil)
+var _ runinpopup.TTYHandshaker = (*TmuxPopup)(nil)
 
 // TmuxPopup opens popups with tmux's display-popup ("tmux popup"). The
 // popup is a client-side overlay, so it targets a client rather than a session.
@@ -63,10 +63,10 @@ func (b *TmuxPopup) Prepare(_ context.Context) (func(context.Context) error, err
 	return nil, nil
 }
 
-// NewPinentryHandshake uses the shared tmux handshake: display-popup injects the
+// NewTTYHandshake uses the shared tmux handshake: display-popup injects the
 // FIFO paths and the guard secrets as popup env (-e).
-func (b *TmuxPopup) NewPinentryHandshake(
+func (b *TmuxPopup) NewTTYHandshake(
 	ttyFifo, doneFifo string,
-) (runinpopup.PinentryHandshake, error) {
-	return newTmuxPinentryHandshake(ttyFifo, doneFifo)
+) (runinpopup.TTYHandshake, error) {
+	return newTmuxTTYHandshake(ttyFifo, doneFifo)
 }

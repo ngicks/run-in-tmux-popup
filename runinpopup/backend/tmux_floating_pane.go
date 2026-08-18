@@ -8,7 +8,7 @@ import (
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/tmux"
 )
 
-var _ runinpopup.PinentryHandshaker = (*TmuxFloatingPane)(nil)
+var _ runinpopup.TTYHandshaker = (*TmuxFloatingPane)(nil)
 
 // TmuxFloatingPane opens popups as tmux floating panes ("tmux new-pane",
 // bound to `*` by default). A floating pane belongs to a window rather than to a
@@ -62,12 +62,12 @@ func (b *TmuxFloatingPane) paneRequest(spec runinpopup.LaunchSpec) tmux.PaneRequ
 	}
 }
 
-// NewPinentryHandshake uses the shared tmux handshake: new-pane injects the FIFO
+// NewTTYHandshake uses the shared tmux handshake: new-pane injects the FIFO
 // paths and the guard secrets as pane env (-e), same as display-popup.
-func (b *TmuxFloatingPane) NewPinentryHandshake(
+func (b *TmuxFloatingPane) NewTTYHandshake(
 	ttyFifo, doneFifo string,
-) (runinpopup.PinentryHandshake, error) {
-	return newTmuxPinentryHandshake(ttyFifo, doneFifo)
+) (runinpopup.TTYHandshake, error) {
+	return newTmuxTTYHandshake(ttyFifo, doneFifo)
 }
 
 // Prepare de-zooms the window before the floating pane is created, and returns a

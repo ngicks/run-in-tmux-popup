@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/ngicks/go-common/contextkey v0.3.0
+	github.com/ngicks/go-common/iopipe v0.0.1
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sync v0.22.0
 )

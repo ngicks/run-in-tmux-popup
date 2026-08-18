@@ -30,6 +30,10 @@ auto-detection from PINENTRY_USER_DATA, then $TMUX (which selects tmux-popup;
 tmux floating panes stay an explicit choice), then $ZELLIJ. Arguments after "--"
 are passed to the pinentry binary unchanged.`
 
+// pinentryWorkspacePrefix names the directory holding one prompt's handshake
+// FIFOs, and its debug log when the run has one.
+const pinentryWorkspacePrefix = "run-in-popup-pinentry-"
+
 const pinentryExample = `  run-in-popup pinentry
   run-in-popup pinentry --backend zellij
   run-in-popup pinentry --backend tmux-floating-pane
@@ -99,24 +103,34 @@ func runPinentry(
 		return err
 	}
 
-	workspace, err := runworkspace.Open(
-		"run-in-popup-pinentry-*",
-		rt.UserData.Debug(),
-		contextkey.ValueSlogLoggerFallback(ctx, slog.Default()),
-	)
-	if err != nil {
-		return err
+	logger := contextkey.ValueSlogLoggerFallback(ctx, slog.Default())
+	popupWorkspace := runinpopup.WorkspaceOptions{NamePrefix: pinentryWorkspacePrefix}
+	if rt.UserData.Debug() {
+		// A debug run is told to look for log.txt in the directory holding the
+		// handshake FIFOs, and to find it still there afterwards. The log file has
+		// to exist before the exchange starts, so a debug run creates that
+		// directory itself and hands it over as a caller-owned one — which the
+		// exchange uses and never removes.
+		workspace, err := runworkspace.Open(pinentryWorkspacePrefix+"*", true, logger)
+		if err != nil {
+			return err
+		}
+		defer workspace.Close()
+		logger, popupWorkspace = workspace.Logger, runinpopup.WorkspaceOptions{Dir: workspace.Dir}
 	}
-	defer workspace.Close()
-	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", rt.UserData))
+	logger.Info("PINENTRY_USER_DATA", slog.Any("data", rt.UserData))
 
-	return runinpopup.CallPinentry(ctx, rt.Backend, runinpopup.PinentryOptions{
-		Logger:       workspace.Logger,
-		TempDir:      workspace.Dir,
+	pinentry := &runinpopup.PinentryLauncher{
+		Popup: &runinpopup.PopupLauncher{
+			Backend:   rt.Backend,
+			Logger:    logger,
+			Workspace: popupWorkspace,
+		},
 		PinentryPath: rt.Config.PinentryPath,
 		PinentryArgs: args,
 		Timeouts:     rt.Config.Timeouts,
-	})
+	}
+	return pinentry.Call(ctx)
 }
 
 // pinentryFlagOverrides turns explicitly-set flags into the topmost config

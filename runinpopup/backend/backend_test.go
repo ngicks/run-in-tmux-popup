@@ -77,12 +77,12 @@ func launchSpec(spec runinpopup.PopupSpec) runinpopup.LaunchSpec {
 
 // The handshake argv is asserted literally: it is the one command line proven to
 // work against a live tmux, so any change to it must be a deliberate edit here.
-func TestTmuxPopup_Launch_pinentryHandshake(t *testing.T) {
+func TestTmuxPopup_Launch_ttyHandshake(t *testing.T) {
 	b := tmuxBackend(t)
 
-	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
+	handshake, err := b.NewTTYHandshake("/tmp/popup/tty", "/tmp/popup/done")
 	if err != nil {
-		t.Fatalf("NewPinentryHandshake: %v", err)
+		t.Fatalf("NewTTYHandshake: %v", err)
 	}
 	prefix := handshake.Spec.Env["SEC_PREFIX"]
 	suffix := handshake.Spec.Env["SEC_SUFFIX"]
@@ -127,9 +127,9 @@ func TestTmuxBackends_sessionEnviron(t *testing.T) {
 func TestTmuxPopup_ValidateTTY(t *testing.T) {
 	b := tmuxBackend(t)
 
-	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
+	handshake, err := b.NewTTYHandshake("/tmp/popup/tty", "/tmp/popup/done")
 	if err != nil {
-		t.Fatalf("NewPinentryHandshake: %v", err)
+		t.Fatalf("NewTTYHandshake: %v", err)
 	}
 	prefix := handshake.Spec.Env["SEC_PREFIX"]
 	suffix := handshake.Spec.Env["SEC_SUFFIX"]
@@ -177,12 +177,12 @@ func TestTmuxPopup_ValidateTTY(t *testing.T) {
 	}
 }
 
-func TestTmuxFloatingPane_Launch_pinentryHandshake(t *testing.T) {
+func TestTmuxFloatingPane_Launch_ttyHandshake(t *testing.T) {
 	b := tmuxFloatingPaneBackend(t)
 
-	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
+	handshake, err := b.NewTTYHandshake("/tmp/popup/tty", "/tmp/popup/done")
 	if err != nil {
-		t.Fatalf("NewPinentryHandshake: %v", err)
+		t.Fatalf("NewTTYHandshake: %v", err)
 	}
 	prefix := handshake.Spec.Env["SEC_PREFIX"]
 	suffix := handshake.Spec.Env["SEC_SUFFIX"]
@@ -203,9 +203,9 @@ func TestTmuxFloatingPane_Launch_pinentryHandshake(t *testing.T) {
 // The guard is the tmux-popup one, shared: same secrets, same validator.
 func TestTmuxFloatingPane_ValidateTTY(t *testing.T) {
 	handshake, err := tmuxFloatingPaneBackend(t).
-		NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
+		NewTTYHandshake("/tmp/popup/tty", "/tmp/popup/done")
 	if err != nil {
-		t.Fatalf("NewPinentryHandshake: %v", err)
+		t.Fatalf("NewTTYHandshake: %v", err)
 	}
 	prefix := handshake.Spec.Env["SEC_PREFIX"]
 	suffix := handshake.Spec.Env["SEC_SUFFIX"]
@@ -232,12 +232,12 @@ func TestTmuxFloatingPane_Launch_dropsTitle(t *testing.T) {
 	}
 }
 
-func TestZellij_Launch_pinentryHandshake(t *testing.T) {
+func TestZellij_Launch_ttyHandshake(t *testing.T) {
 	b := zellijBackend(t)
 
-	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
+	handshake, err := b.NewTTYHandshake("/tmp/popup/tty", "/tmp/popup/done")
 	if err != nil {
-		t.Fatalf("NewPinentryHandshake: %v", err)
+		t.Fatalf("NewTTYHandshake: %v", err)
 	}
 	if handshake.ValidateTTY != nil {
 		t.Error("zellij announces its tty unguarded; ValidateTTY must stay nil")
@@ -285,8 +285,8 @@ func TestNew(t *testing.T) {
 		if b.Name() != name {
 			t.Errorf("New(%q).Name() = %q", name, b.Name())
 		}
-		if _, ok := b.(runinpopup.PinentryHandshaker); !ok {
-			t.Errorf("backend %q does not implement PinentryHandshaker", name)
+		if _, ok := b.(runinpopup.TTYHandshaker); !ok {
+			t.Errorf("backend %q does not implement TTYHandshaker", name)
 		}
 	}
 

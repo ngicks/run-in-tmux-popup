@@ -69,9 +69,15 @@ func run() error {
 	defer workspace.Close()
 	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", userData))
 
-	return runinpopup.CallPinentry(ctx, popupBackend, runinpopup.PinentryOptions{
-		Logger:       workspace.Logger,
-		TempDir:      workspace.Dir,
+	pinentry := &runinpopup.PinentryLauncher{
+		Popup: &runinpopup.PopupLauncher{
+			Backend: popupBackend,
+			Logger:  workspace.Logger,
+			// The workspace this binary opened, whose lifetime it keeps owning:
+			// removing it is what its own Close does, debug runs included.
+			Workspace: runinpopup.WorkspaceOptions{Dir: workspace.Dir},
+		},
 		PinentryArgs: os.Args[1:],
-	})
+	}
+	return pinentry.Call(ctx)
 }

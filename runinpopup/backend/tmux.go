@@ -22,21 +22,21 @@ import (
 const tmuxTTYHandshakeScript = "echo ${SEC_PREFIX}$(tty)${SEC_SUFFIX} >> ${TTY_FIFO_FILE}" +
 	" && read done < ${DONE_FIFO_FILE}"
 
-// newTmuxPinentryHandshake wraps the announced tty in a per-popup random prefix
-// and suffix. Anything else that manages to open the tty FIFO first cannot
-// produce them, so its tty is rejected instead of being handed the passphrase
-// prompt. Both tmux mechanisms can inject the secrets as popup environment
-// (-e), which is what makes the guard worth having here and theater in zellij.
-func newTmuxPinentryHandshake(ttyFifo, doneFifo string) (runinpopup.PinentryHandshake, error) {
+// newTmuxTTYHandshake wraps the announced tty in a per-popup random prefix and
+// suffix. Anything else that manages to open the tty FIFO first cannot produce
+// them, so its tty is rejected instead of being handed the passphrase prompt.
+// Both tmux mechanisms can inject the secrets as popup environment (-e), which
+// is what makes the guard worth having here and theater in zellij.
+func newTmuxTTYHandshake(ttyFifo, doneFifo string) (runinpopup.TTYHandshake, error) {
 	prefix, err := randomToken()
 	if err != nil {
-		return runinpopup.PinentryHandshake{}, err
+		return runinpopup.TTYHandshake{}, err
 	}
 	suffix, err := randomToken()
 	if err != nil {
-		return runinpopup.PinentryHandshake{}, err
+		return runinpopup.TTYHandshake{}, err
 	}
-	return runinpopup.PinentryHandshake{
+	return runinpopup.TTYHandshake{
 		Spec: runinpopup.PopupSpec{
 			Env: map[string]string{
 				"TTY_FIFO_FILE":  ttyFifo,

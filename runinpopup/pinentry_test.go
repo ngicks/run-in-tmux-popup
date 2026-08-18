@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ const popupTTY = "/dev/pts/42"
 
 // fakePinentryCommand is the argv[0] after the program name that turns this
 // test binary into a stand-in for the pinentry executable. It travels in
-// PinentryArgs — which callPinentry passes through untouched — rather than in
+// PinentryArgs — which the launcher passes through untouched — rather than in
 // the environment, so the dispatch cannot reach the popup payload or any other
 // subprocess a test starts.
 const fakePinentryCommand = "fake-pinentry"
@@ -81,10 +82,10 @@ func runFakePinentry() (int, bool) {
 	return 0, true
 }
 
-// ttyHandshakeBackend is shellBackend hosting the pinentry tty handshake, so
-// the whole exchange can be driven without a terminal multiplexer: its popup
-// payload runs in a local shell and speaks the FIFO protocol the real backends'
-// payloads speak.
+// ttyHandshakeBackend is shellBackend hosting the tty handshake, so the whole
+// exchange can be driven without a terminal multiplexer: its popup payload runs
+// in a local shell and speaks the FIFO protocol the real backends' payloads
+// speak.
 type ttyHandshakeBackend struct {
 	shellBackend
 	// script builds the popup payload from the two FIFO paths. nil announces
@@ -95,17 +96,17 @@ type ttyHandshakeBackend struct {
 	handshakeErr error
 }
 
-func (b *ttyHandshakeBackend) NewPinentryHandshake(
+func (b *ttyHandshakeBackend) NewTTYHandshake(
 	ttyFifo, doneFifo string,
-) (PinentryHandshake, error) {
+) (TTYHandshake, error) {
 	if b.handshakeErr != nil {
-		return PinentryHandshake{}, b.handshakeErr
+		return TTYHandshake{}, b.handshakeErr
 	}
 	script := b.script
 	if script == nil {
 		script = announceThenWait
 	}
-	return PinentryHandshake{
+	return TTYHandshake{
 		Spec:        PopupSpec{Script: script(ttyFifo, doneFifo)},
 		ValidateTTY: b.validateTTY,
 	}, nil
@@ -128,10 +129,10 @@ func staysSilent(_, _ string) string { return "sleep 5" }
 
 // pinentryProxy is one wired-up exchange: a popup that touches no multiplexer,
 // this test binary standing in for the pinentry executable, and pipes standing
-// in for the process stdio the proxy relays between — and closes.
+// in for the process stdio the proxy relays between.
 type pinentryProxy struct {
 	dir        string
-	opts       PinentryOptions
+	launcher   *PinentryLauncher
 	backend    *ttyHandshakeBackend
 	stdin      *os.File
 	transcript string
@@ -158,8 +159,13 @@ func newPinentryProxy(t *testing.T, mode string) *pinentryProxy {
 	p.stdin = w
 	t.Cleanup(func() { r.Close(); w.Close() })
 
-	p.opts = PinentryOptions{
-		TempDir:      dir,
+	p.launcher = &PinentryLauncher{
+		Popup: &PopupLauncher{
+			Backend: p.backend,
+			// The test owns the directory, so the handshake FIFOs land where the
+			// assertions below look for them.
+			Workspace: WorkspaceOptions{Dir: dir},
+		},
 		PinentryPath: os.Args[0],
 		PinentryArgs: []string{fakePinentryCommand, p.transcript, p.pidfile, mode},
 		// Every bound is short enough that a regression stalls one test rather
@@ -286,15 +292,19 @@ func fdsPointingAt(t *testing.T, path string) int {
 	return n
 }
 
-func TestCallPinentry_requiresHandshaker(t *testing.T) {
-	err := CallPinentry(t.Context(), &shellBackend{}, PinentryOptions{
-		TempDir: t.TempDir(),
-	})
-	if err == nil || !strings.Contains(err.Error(), "PinentryHandshaker") {
+func TestPinentryLauncher_Call_requiresHandshaker(t *testing.T) {
+	launcher := &PinentryLauncher{
+		Popup: &PopupLauncher{
+			Backend:   &shellBackend{},
+			Workspace: WorkspaceOptions{Dir: t.TempDir()},
+		},
+	}
+	err := launcher.Call(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "TTYHandshaker") {
 		t.Fatalf("err = %v, want it to name the missing interface", err)
 	}
-	if err := CallPinentry(t.Context(), new(ttyHandshakeBackend), PinentryOptions{}); err == nil {
-		t.Fatal("an unset TempDir must be rejected")
+	if err := (&PinentryLauncher{}).Call(t.Context()); err == nil {
+		t.Fatal("a launcher without a popup launcher must be rejected")
 	}
 }
 
@@ -302,7 +312,10 @@ func TestCallPinentry_requiresHandshaker(t *testing.T) {
 // draw in the popup, not on the terminal gpg-agent happened to pick. Everything
 // around it — including the \r\n bufio.Scanner strips — is pinned byte for byte,
 // since this is the exact stream the pinentry child sees.
-func TestCallPinentry_rewritesTheAnnouncedTTYIntoTheStream(t *testing.T) {
+//
+// The exchange ends by closing its end of the relayed stdin, so this also pins
+// that the close it causes itself is not reported as a failure.
+func TestPinentryLauncher_Call_rewritesTheAnnouncedTTYIntoTheStream(t *testing.T) {
 	p := newPinentryProxy(t, pinentryReadsUntilBye)
 	p.feed(t, "OPTION lc-ctype=en_US.UTF-8\n"+
 		"OPTION ttyname=/dev/pts/9\n"+
@@ -312,8 +325,8 @@ func TestCallPinentry_rewritesTheAnnouncedTTYIntoTheStream(t *testing.T) {
 		"GETPIN\n"+
 		"BYE\n")
 
-	if err := CallPinentry(t.Context(), p.backend, p.opts); err != nil {
-		t.Fatalf("CallPinentry: %v", err)
+	if err := p.launcher.Call(t.Context()); err != nil {
+		t.Fatalf("Call: %v", err)
 	}
 
 	want := "OPTION lc-ctype=en_US.UTF-8\n" +
@@ -330,7 +343,7 @@ func TestCallPinentry_rewritesTheAnnouncedTTYIntoTheStream(t *testing.T) {
 
 // Only a line that starts with the option, spelled exactly that way, is
 // rewritten; every near miss and everything else reaches pinentry as it came.
-func TestCallPinentry_forwardsEverythingElseByteForByte(t *testing.T) {
+func TestPinentryLauncher_Call_forwardsEverythingElseByteForByte(t *testing.T) {
 	p := newPinentryProxy(t, pinentryReadsUntilBye)
 	stream := "OPTION ttyname\n" +
 		" OPTION ttyname=/dev/pts/9\n" +
@@ -342,8 +355,8 @@ func TestCallPinentry_forwardsEverythingElseByteForByte(t *testing.T) {
 		"BYE\n"
 	p.feed(t, stream)
 
-	if err := CallPinentry(t.Context(), p.backend, p.opts); err != nil {
-		t.Fatalf("CallPinentry: %v", err)
+	if err := p.launcher.Call(t.Context()); err != nil {
+		t.Fatalf("Call: %v", err)
 	}
 	if got := p.forwarded(t); got != stream {
 		t.Errorf("forwarded to pinentry:\n%q\nwant it unchanged:\n%q", got, stream)
@@ -354,14 +367,14 @@ func TestCallPinentry_forwardsEverythingElseByteForByte(t *testing.T) {
 // the proxy: both FIFOs are opened read-write, so neither the tty read nor the
 // dismissal lacks a peer, and the exchange finishes exactly as if the popup were
 // still there — dismissal bytes included.
-func TestCallPinentry_popupThatGoesAwayIsNotNoticed(t *testing.T) {
+func TestPinentryLauncher_Call_popupThatGoesAwayIsNotNoticed(t *testing.T) {
 	p := newPinentryProxy(t, pinentryReadsUntilBye)
 	p.backend.script = announceThenExit
 	dismissal := watchDone(t, p.doneFifo)
 	p.feed(t, "GETPIN\nBYE\n")
 
-	if err := CallPinentry(t.Context(), p.backend, p.opts); err != nil {
-		t.Fatalf("CallPinentry: %v", err)
+	if err := p.launcher.Call(t.Context()); err != nil {
+		t.Fatalf("Call: %v", err)
 	}
 	if got := p.forwarded(t); got != "GETPIN\nBYE\n" {
 		t.Errorf("forwarded %q, want the exchange to have run to the end", got)
@@ -373,20 +386,20 @@ func TestCallPinentry_popupThatGoesAwayIsNotNoticed(t *testing.T) {
 
 // pinentry never starting is reported with the path that failed — and the popup
 // is still dismissed, since it would otherwise linger until the overall timeout.
-func TestCallPinentry_pinentryThatCannotStart(t *testing.T) {
+func TestPinentryLauncher_Call_pinentryThatCannotStart(t *testing.T) {
 	p := newPinentryProxy(t, pinentryReadsUntilBye)
 	p.backend.script = announceThenExit
-	p.opts.PinentryPath = filepath.Join(p.dir, "no-such-pinentry")
+	p.launcher.PinentryPath = filepath.Join(p.dir, "no-such-pinentry")
 	dismissal := watchDone(t, p.doneFifo)
 	p.feed(t, "BYE\n")
 
-	err := CallPinentry(t.Context(), p.backend, p.opts)
+	err := p.launcher.Call(t.Context())
 
 	if err == nil || !strings.Contains(err.Error(), "failed to start") {
 		t.Fatalf("err = %v, want the pinentry start failure surfaced", err)
 	}
-	if !strings.Contains(err.Error(), p.opts.PinentryPath) {
-		t.Errorf("err = %v, want it to name %q", err, p.opts.PinentryPath)
+	if !strings.Contains(err.Error(), p.launcher.PinentryPath) {
+		t.Errorf("err = %v, want it to name %q", err, p.launcher.PinentryPath)
 	}
 	if got := dismissal(); got != "done\n" {
 		t.Errorf("done fifo carried %q, want the popup dismissed anyway", got)
@@ -395,9 +408,10 @@ func TestCallPinentry_pinentryThatCannotStart(t *testing.T) {
 
 // Cancelling mid-prompt is the ordinary way a passphrase request ends: the user
 // walks away and gpg-agent's deadline fires. Everything the exchange holds has
-// to go with it — the pinentry process, the two handshake FIFOs, and the stdin
-// it was handed, which is what unblocks the reader piping it.
-func TestCallPinentry_cancellationReleasesTheProcessAndPipes(t *testing.T) {
+// to go with it — the pinentry process and the two handshake FIFOs — while the
+// stdio it was handed has to survive: gpg-agent speaks Assuan over this
+// process's own streams, which are none of this package's business to close.
+func TestPinentryLauncher_Call_cancellationReleasesTheProcessAndPipes(t *testing.T) {
 	p := newPinentryProxy(t, pinentryHangs)
 	p.feed(t, "GETPIN\n")
 
@@ -405,7 +419,7 @@ func TestCallPinentry_cancellationReleasesTheProcessAndPipes(t *testing.T) {
 	defer cancel()
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- CallPinentry(ctx, p.backend, p.opts) }()
+	go func() { errCh <- p.launcher.Call(ctx) }()
 
 	pid := p.pinentryPid(t)
 	cancel()
@@ -416,14 +430,15 @@ func TestCallPinentry_cancellationReleasesTheProcessAndPipes(t *testing.T) {
 			t.Fatal("a canceled exchange must report an error")
 		}
 	case <-time.After(20 * time.Second):
-		t.Fatal("CallPinentry never returned after the cancellation")
+		t.Fatal("Call never returned after the cancellation")
 	}
 
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Errorf("kill(%d, 0) = %v, want the pinentry process gone and reaped", pid, err)
 	}
-	if _, err := p.opts.stdin.Read(make([]byte, 1)); !errors.Is(err, os.ErrClosed) {
-		t.Errorf("reading the relayed stdin = %v, want it closed by the exchange", err)
+	// A closed read end would make this write fail with EPIPE.
+	if _, err := p.stdin.WriteString("BYE\n"); err != nil {
+		t.Errorf("writing the relayed stdin = %v, want the exchange to have left it open", err)
 	}
 	for _, fifo := range []string{filepath.Join(p.dir, "tty"), p.doneFifo} {
 		if n := fdsPointingAt(t, fifo); n != 0 {
@@ -435,14 +450,14 @@ func TestCallPinentry_cancellationReleasesTheProcessAndPipes(t *testing.T) {
 // A popup that never announces anything cannot be waited on forever, and the
 // proxy is its own reader on the tty FIFO, so no EOF is coming: the read
 // deadline is the only thing that ends it, and pinentry is never started.
-func TestCallPinentry_ttyThatIsNeverAnnounced(t *testing.T) {
+func TestPinentryLauncher_Call_ttyThatIsNeverAnnounced(t *testing.T) {
 	p := newPinentryProxy(t, pinentryReadsUntilBye)
 	p.backend.script = staysSilent
-	p.opts.Timeouts.TTYRead = 150 * time.Millisecond
+	p.launcher.Timeouts.TTYRead = 150 * time.Millisecond
 	p.feed(t, "BYE\n")
 
 	start := time.Now()
-	err := CallPinentry(t.Context(), p.backend, p.opts)
+	err := p.launcher.Call(t.Context())
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, os.ErrDeadlineExceeded) {
@@ -452,10 +467,169 @@ func TestCallPinentry_ttyThatIsNeverAnnounced(t *testing.T) {
 		t.Errorf("err = %v, want the stage that failed named", err)
 	}
 	if elapsed > 5*time.Second {
-		t.Errorf("CallPinentry waited %v, far past the %v bound",
-			elapsed, p.opts.Timeouts.TTYRead)
+		t.Errorf("Call waited %v, far past the %v bound",
+			elapsed, p.launcher.Timeouts.TTYRead)
 	}
 	if _, err := os.Stat(p.pidfile); err == nil {
 		t.Error("pinentry was started although no tty was ever announced")
 	}
+}
+
+// fakeRendezvous is a popup the exchange never has to open: it announces a
+// terminal on demand and records having been dismissed.
+type fakeRendezvous struct {
+	tty        string
+	acquireErr error
+	dismissErr error
+	dismissed  int
+}
+
+func (f *fakeRendezvous) acquire(context.Context) (string, error) {
+	return f.tty, f.acquireErr
+}
+
+func (f *fakeRendezvous) dismiss() error {
+	f.dismissed++
+	return f.dismissErr
+}
+
+// fakePinentry is a pinentry that never runs: it records the stream the
+// exchange rewrites into it and ends the wait on the line that ends a real
+// Assuan exchange, the way the binary does by exiting.
+type fakePinentry struct {
+	startErr error
+	waitErr  error
+	started  int
+
+	mu       sync.Mutex
+	received bytes.Buffer
+	byeSeen  chan struct{}
+	// seeBye ends the wait, whether the exchange forwarded the line or a test
+	// stands in for one that never had to.
+	seeBye func()
+}
+
+func newFakePinentry() *fakePinentry {
+	f := &fakePinentry{byeSeen: make(chan struct{})}
+	f.seeBye = sync.OnceFunc(func() { close(f.byeSeen) })
+	return f
+}
+
+func (f *fakePinentry) start(context.Context) (io.WriteCloser, error) {
+	f.started++
+	if f.startErr != nil {
+		return nil, f.startErr
+	}
+	return f, nil
+}
+
+func (f *fakePinentry) wait() error {
+	if f.startErr == nil {
+		<-f.byeSeen
+	}
+	return f.waitErr
+}
+
+func (f *fakePinentry) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n, err := f.received.Write(p)
+	if bytes.Contains(f.received.Bytes(), []byte("BYE\n")) {
+		f.seeBye()
+	}
+	return n, err
+}
+
+func (f *fakePinentry) Close() error { return nil }
+
+func (f *fakePinentry) forwarded() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.received.String()
+}
+
+func TestPinentryExchange_run(t *testing.T) {
+	newExchange := func(
+		rendezvous *fakeRendezvous,
+		pinentry *fakePinentry,
+		input io.ReadCloser,
+	) *pinentryExchange {
+		return &pinentryExchange{
+			rendezvous: rendezvous,
+			pinentry:   pinentry,
+			input:      input,
+			logger:     loggerOrDiscard(nil),
+		}
+	}
+
+	t.Run("the announced terminal reaches pinentry", func(t *testing.T) {
+		rendezvous := &fakeRendezvous{tty: popupTTY}
+		pinentry := newFakePinentry()
+		// Left open after the stream, as gpg-agent leaves its end: what ends the
+		// relay is the exchange closing this end, not the sender stopping.
+		pr, pw := io.Pipe()
+		go func() {
+			_, _ = pw.Write([]byte("OPTION ttyname=/dev/pts/9\nBYE\n"))
+		}()
+
+		if err := newExchange(rendezvous, pinentry, pr).run(t.Context()); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		want := "OPTION ttyname=" + popupTTY + "\nBYE\n"
+		if got := pinentry.forwarded(); got != want {
+			t.Errorf("forwarded %q, want %q", got, want)
+		}
+		if rendezvous.dismissed != 1 {
+			t.Errorf("dismissed %d times, want exactly one", rendezvous.dismissed)
+		}
+	})
+
+	t.Run("a popup that announced nothing is still dismissed", func(t *testing.T) {
+		acquireErr := errors.New("scan failed")
+		rendezvous := &fakeRendezvous{acquireErr: acquireErr}
+		pinentry := newFakePinentry()
+
+		err := newExchange(rendezvous, pinentry, io.NopCloser(strings.NewReader(""))).
+			run(t.Context())
+
+		if !errors.Is(err, acquireErr) {
+			t.Fatalf("err = %v, want it to wrap %v", err, acquireErr)
+		}
+		if rendezvous.dismissed != 1 {
+			t.Errorf("dismissed %d times, want the popup told to go away anyway",
+				rendezvous.dismissed)
+		}
+		if pinentry.started != 0 {
+			t.Error("pinentry was started although no terminal was ever announced")
+		}
+	})
+
+	t.Run("pinentry's failure outranks a failed dismissal", func(t *testing.T) {
+		waitErr := errors.New("pinentry failed")
+		rendezvous := &fakeRendezvous{tty: popupTTY, dismissErr: errors.New("writing done fifo")}
+		pinentry := newFakePinentry()
+		pinentry.waitErr = waitErr
+		pinentry.seeBye()
+
+		err := newExchange(rendezvous, pinentry, io.NopCloser(strings.NewReader(""))).
+			run(t.Context())
+
+		if !errors.Is(err, waitErr) {
+			t.Fatalf("err = %v, want the pinentry failure, not the dismissal", err)
+		}
+	})
+
+	t.Run("a failed dismissal is reported when nothing else failed", func(t *testing.T) {
+		dismissErr := errors.New("writing done fifo")
+		rendezvous := &fakeRendezvous{tty: popupTTY, dismissErr: dismissErr}
+		pinentry := newFakePinentry()
+		pinentry.seeBye()
+
+		err := newExchange(rendezvous, pinentry, io.NopCloser(strings.NewReader(""))).
+			run(t.Context())
+
+		if !errors.Is(err, dismissErr) {
+			t.Fatalf("err = %v, want the dismissal failure", err)
+		}
+	})
 }

@@ -8,7 +8,7 @@ import (
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/zellij"
 )
 
-var _ runinpopup.PinentryHandshaker = (*Zellij)(nil)
+var _ runinpopup.TTYHandshaker = (*Zellij)(nil)
 
 // Zellij opens popups as zellij floating panes ("zellij run
 // --floating"). zellij addresses sessions, not clients, so there is no client
@@ -61,20 +61,20 @@ func (b *Zellij) Prepare(_ context.Context) (func(context.Context) error, error)
 	return nil, nil
 }
 
-// zellijPinentryPaneName is the floating pane's name during the pinentry
-// handshake, unchanged from cmd/zellij-popup-pinentry-curses so the argv this
-// package builds stays identical to the one that binary shipped.
-const zellijPinentryPaneName = "pinentry-curses"
+// zellijHandshakePaneName is the floating pane's name during the handshake. It
+// still reads "pinentry-curses" — the name cmd/zellij-popup-pinentry-curses
+// shipped — so the argv this package builds stays identical to that binary's.
+const zellijHandshakePaneName = "pinentry-curses"
 
-// NewPinentryHandshake announces the tty unguarded: "zellij run" has no env
+// NewTTYHandshake announces the tty unguarded: "zellij run" has no env
 // injection flag, so a prefix/suffix secret would have to travel in the argv,
 // where any process on the machine can read it — the guard would be theater.
-func (b *Zellij) NewPinentryHandshake(
+func (b *Zellij) NewTTYHandshake(
 	ttyFifo, doneFifo string,
-) (runinpopup.PinentryHandshake, error) {
-	return runinpopup.PinentryHandshake{
+) (runinpopup.TTYHandshake, error) {
+	return runinpopup.TTYHandshake{
 		Spec: runinpopup.PopupSpec{
-			Title:  zellijPinentryPaneName,
+			Title:  zellijHandshakePaneName,
 			Script: fmt.Sprintf("echo $(tty) >> %s && read done < %s", ttyFifo, doneFifo),
 		},
 	}, nil

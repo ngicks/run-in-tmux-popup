@@ -55,9 +55,27 @@ debug-log policy is step 6's call, README.md:104 wording included);
 a SIGKILLed caller can leave the popup shell blocked in open(2) on the
 stdout FIFO (graceful timeout paths are covered; noted in code).
 
-Next action: step 5 (TTY rendezvous + Assuan transformer + iopipe;
-migrate pinentry onto PinentryLauncher, dissolve
-PinentryOptions/CallPinentry).
+Step 5 landed 2026-08-18: pinentry split into TTY rendezvous
+(`ttyhandshake.go`), pure `rewriteAssuanTTY` transformer (`assuan.go`),
+pinentry process runner, and a coordinator testable with fakes;
+`PinentryLauncher.Call` on `PopupLauncher`; iopipe (go-common v0.0.1)
+controllers at the OS-stdio boundary with the primary-error-wins close
+handling; `PinentryHandshake(r)` renamed `TTYHandshake(r)` per the
+recorded decision; `PinentryOptions`/`CallPinentry` deleted. Pinentry
+debug runs still get `runworkspace`'s dir + log.txt (handed to the
+launcher as caller-owned `Dir`); shims minimally ported. Notable
+deviations, documented in code: pinentry's stdout/stderr are now
+os/exec pipes rather than inherited *os.File fds (Assuan bytes verified
+identical; a live pinentry-curses smoke test on a tmux host is the
+remaining confidence gap); cancellation is SIGINT + 2s grace instead of
+immediate SIGKILL; the seamed stdin is no longer closed by the library;
+per-line debug logs replaced by one `pinentry started` log naming the
+tty. Known iopipe quirk recorded in stdio.go: a Writer's completion
+channel can report nil for a failing write, so output failures surface
+through cmd.Wait, input failures through close().
+
+Next action: steps 6 and 7 in parallel (disjoint files): legacyshim +
+runworkspace ownership; mechanical exec.go split.
 
 ## Checklist
 
@@ -78,7 +96,7 @@ PinentryOptions/CallPinentry).
       `Out = ExecResult` (D1: "must not duplicate the lifecycle"; D15:
       "`Exec(ctx, v In)` … single entry method"; D14 `ExecOptions`/`CallExec`
       removed; D12 retention reported via log)
-- [ ] Step 5 — TTY rendezvous + Assuan transformer + iopipe; pinentry
+- [x] Step 5 — TTY rendezvous + Assuan transformer + iopipe; pinentry
       migrated (D2: "Split TTY acquisition from Assuan rewriting and pinentry
       process execution"; D3: "iopipe … rather than an ad hoc os.Pipe plus an
       unowned goroutine"; D13: "`PinentryLauncher`"; D12 applied to the
