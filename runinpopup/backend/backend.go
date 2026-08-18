@@ -56,14 +56,3 @@ func Names() []string { return runinpopup.BackendNames() }
 func DetectName(userDataKind, tmuxEnv, zellijEnv string) (string, error) {
 	return runinpopup.DetectBackendName(userDataKind, tmuxEnv, zellijEnv)
 }
-
-func commandLine(spec runinpopup.PopupSpec) string {
-	if spec.Script != "" {
-		return spec.Script
-	}
-	quoted := make([]string, len(spec.Command))
-	for i, arg := range spec.Command {
-		quoted[i] = shellQuote(arg)
-	}
-	return strings.Join(quoted, " ")
-}

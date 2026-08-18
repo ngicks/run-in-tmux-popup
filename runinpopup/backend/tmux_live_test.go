@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/tmux"
 )
 
 // scratchTmuxSeq keeps two scratch servers in one test binary apart.
@@ -94,17 +96,17 @@ func requireZoomCrashAffectedTmux(t *testing.T, tmuxPath string) {
 	if err != nil {
 		t.Fatalf("tmux -V: %v", err)
 	}
-	if !tmuxAffectedByZoomCrash(string(out)) {
+	if !tmux.AffectedByZoomCrash(string(out)) {
 		t.Skipf("%s is past the floating-pane zoom crash", strings.TrimSpace(string(out)))
 	}
 }
 
 func TestTmuxFloatingPane_Prepare_live(t *testing.T) {
-	b, tmux := scratchTmux(t)
+	b, runTmux := scratchTmux(t)
 
 	zoomState := func() string {
 		t.Helper()
-		return tmux("display-message", "-p", "-t", "probe", zoomStateFormat)
+		return runTmux("display-message", "-p", "-t", "probe", tmux.ZoomStateFormat)
 	}
 
 	t.Run("unzoomed window is left alone", func(t *testing.T) {
@@ -121,8 +123,8 @@ func TestTmuxFloatingPane_Prepare_live(t *testing.T) {
 	})
 
 	t.Run("zoomed window is de-zoomed and restored", func(t *testing.T) {
-		requireZoomCrashAffectedTmux(t, b.tmuxPath)
-		tmux("resize-pane", "-Z", "-t", "probe")
+		requireZoomCrashAffectedTmux(t, b.tmux.Path())
+		runTmux("resize-pane", "-Z", "-t", "probe")
 		zoomed := zoomState()
 		if !strings.HasPrefix(zoomed, "1:") {
 			t.Fatalf("zoom state = %q, want the window zoomed before Prepare", zoomed)
@@ -152,12 +154,12 @@ func TestTmuxFloatingPane_Prepare_live(t *testing.T) {
 // ambient environment points at, or it reports the zoom state of the wrong
 // window and the guard silently stops guarding.
 func TestTmuxFloatingPane_Prepare_liveWrongServerIsNotConsulted(t *testing.T) {
-	b, tmux := scratchTmux(t)
-	requireZoomCrashAffectedTmux(t, b.tmuxPath)
-	tmux("resize-pane", "-Z", "-t", "probe")
+	b, runTmux := scratchTmux(t)
+	requireZoomCrashAffectedTmux(t, b.tmux.Path())
+	runTmux("resize-pane", "-Z", "-t", "probe")
 
 	misdirected, err := NewTmuxFloatingPane(Options{
-		BinaryPath:  b.tmuxPath,
+		BinaryPath:  b.tmux.Path(),
 		SessionId:   "probe",
 		SessionMeta: "/nonexistent/socket,0,0",
 	})

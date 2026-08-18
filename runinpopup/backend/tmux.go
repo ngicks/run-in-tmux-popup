@@ -12,33 +12,8 @@ import (
 )
 
 // Shared by the two tmux backends. They differ only in the popup mechanism
-// (display-popup vs. new-pane); reaching the server and hardening the tty
-// handshake work identically, so those parts live here rather than being
-// duplicated per backend.
-
-// validateTmuxSessionMeta rejects a session meta that could not stand in for
-// $TMUX. It only matters when it is the value that will be used, i.e. when
-// tmuxEnv is empty: a caller already inside tmux does not need it at all.
-func validateTmuxSessionMeta(sessionMeta, tmuxEnv string) error {
-	if tmuxEnv != "" || strings.Contains(sessionMeta, ",") {
-		return nil
-	}
-	return fmt.Errorf(
-		"tmux session meta is malformed:"+
-			" it must be something like %q but is %q",
-		"/run/user/1000/tmux-1000/default,111,0", sessionMeta,
-	)
-}
-
-// tmuxSessionEnviron sets $TMUX from the session meta when the current process
-// has none. Without it every tmux command addresses the default socket instead
-// of the server hosting the popup: the popup silently never appears.
-func tmuxSessionEnviron(sessionMeta, tmuxEnv string) []string {
-	if tmuxEnv != "" || sessionMeta == "" {
-		return nil
-	}
-	return []string{"TMUX=" + sessionMeta}
-}
+// (display-popup vs. new-pane); hardening the tty handshake works identically,
+// so it lives here rather than being duplicated per backend.
 
 // tmuxTTYHandshakeScript reports the popup's tty on ${TTY_FIFO_FILE}, wrapped in
 // the secrets, then blocks until the proxy writes to ${DONE_FIFO_FILE}. The FIFO

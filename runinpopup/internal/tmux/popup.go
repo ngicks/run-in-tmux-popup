@@ -1,0 +1,91 @@
+package tmux
+
+import (
+	"maps"
+	"slices"
+
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/shellargv"
+)
+
+// PopupRequest is a display-popup invocation. The popup is a client-side
+// overlay, so it targets a client rather than a session.
+type PopupRequest struct {
+	// ClientId is the tmux client displaying the popup (-c). Empty lets tmux
+	// resolve the current one.
+	ClientId string
+	// Title titles the popup window (-T). Empty leaves tmux's default.
+	Title string
+	// Env is injected into the popup process (-e).
+	Env map[string]string
+	// Command is the argv the popup runs.
+	Command []string
+	// Script is a raw shell command line taking precedence over Command.
+	Script string
+}
+
+// PopupCommand builds "tmux popup -c <client> [-T <title>] [-e KEY=VALUE...] -E
+// <command line>". display-popup takes a shell command line, so an argv payload
+// is quoted and joined into one.
+func (c *Client) PopupCommand(req PopupRequest) (path string, args []string) {
+	args = []string{"popup"}
+	if req.ClientId != "" {
+		args = append(args, "-c", req.ClientId)
+	}
+	if req.Title != "" {
+		args = append(args, "-T", req.Title)
+	}
+	args = append(args, envArgs(req.Env)...)
+	args = append(args, "-E", commandLine(req.Command, req.Script))
+	return c.path, args
+}
+
+// PaneRequest is a new-pane invocation. A floating pane belongs to a window
+// rather than to a client, so it is addressed by session; there is no
+// client-targeting flag, because every client viewing the window sees the pane.
+type PaneRequest struct {
+	// SessionId is the session whose window holds the pane (-t). Empty lets tmux
+	// resolve the current one.
+	SessionId string
+	// Env is injected into the pane process (-e).
+	Env map[string]string
+	// Command is the argv the pane runs.
+	Command []string
+	// Script is a raw shell command line taking precedence over Command.
+	Script string
+}
+
+// NewPaneCommand builds "tmux new-pane [-t <session>] [-e KEY=VALUE...] --
+// <command line>".
+//
+// new-pane can execute an argv directly, but the payload is passed as a single
+// shell command line so Script payloads work unchanged; "--" then keeps a
+// payload starting with "-" from being read as flags, which display-popup's -E
+// does not need.
+//
+// -d is deliberately absent. It would leave the focus where it was, and a
+// passphrase typed into an unfocused popup goes to the pane underneath.
+func (c *Client) NewPaneCommand(req PaneRequest) (path string, args []string) {
+	args = targeted(req.SessionId, "new-pane")
+	args = append(args, envArgs(req.Env)...)
+	args = append(args, "--", commandLine(req.Command, req.Script))
+	return c.path, args
+}
+
+// envArgs renders an environment as "-e KEY=VALUE" pairs sorted by key, so map
+// iteration order never reaches the argv.
+func envArgs(env map[string]string) []string {
+	var args []string
+	for _, k := range slices.Sorted(maps.Keys(env)) {
+		args = append(args, "-e", k+"="+env[k])
+	}
+	return args
+}
+
+// commandLine renders a payload as the one shell command line both popup
+// mechanisms take.
+func commandLine(command []string, script string) string {
+	if script != "" {
+		return script
+	}
+	return shellargv.Join(command)
+}

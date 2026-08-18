@@ -89,60 +89,27 @@ func TestTmuxPopup_PopupCommand_pinentryHandshake(t *testing.T) {
 	})
 }
 
-func TestTmuxPopup_PopupCommand_argvIsQuoted(t *testing.T) {
-	b := tmuxBackend(t)
-
-	path, args := b.PopupCommand(runinpopup.PopupSpec{
-		Title:   "editor",
-		Env:     map[string]string{"B": "2", "A": "1"},
-		Command: []string{"vim", "my file.txt"},
-	})
-	assertPopupCommand(t, path, args, "/usr/bin/tmux", []string{
-		"popup",
-		"-c", "%1",
-		"-T", "editor",
-		"-e", "A=1",
-		"-e", "B=2",
-		"-E", `'vim' 'my file.txt'`,
-	})
-}
-
-func TestTmuxPopup_PopupCommand_noClient(t *testing.T) {
-	b, err := NewTmuxPopup(Options{TMUX: "/tmp/tmux-1000/default,1,0"})
-	if err != nil {
-		t.Fatalf("NewTmuxPopup: %v", err)
-	}
-	path, args := b.PopupCommand(runinpopup.PopupSpec{Command: []string{"true"}})
-	assertPopupCommand(t, path, args, "tmux", []string{"popup", "-E", `'true'`})
-}
-
-func TestNewTmuxPopup_sessionMeta(t *testing.T) {
-	// Malformed meta only matters when it is the value that will be exported.
+// The session meta rules are the tmux client's; both constructors have to
+// surface its verdict.
+func TestNewTmuxBackends_sessionMetaIsValidated(t *testing.T) {
 	if _, err := NewTmuxPopup(Options{SessionMeta: "not-a-meta"}); err == nil {
-		t.Error("malformed session meta must be rejected when $TMUX is unset")
+		t.Error("NewTmuxPopup must reject a malformed session meta")
 	}
-	if _, err := NewTmuxPopup(Options{
-		SessionMeta: "not-a-meta",
-		TMUX:        "/tmp/tmux-1000/default,1,0",
-	}); err != nil {
-		t.Errorf("session meta is unused when $TMUX is set, got %v", err)
+	if _, err := NewTmuxFloatingPane(Options{SessionMeta: "not-a-meta"}); err == nil {
+		t.Error("NewTmuxFloatingPane must reject a malformed session meta")
 	}
 }
 
-func TestTmuxPopup_Environ(t *testing.T) {
-	meta := "/run/user/1000/tmux-1000/default,111,0"
+// Environ is what points the popup command at the server hosting the popup, so
+// both backends have to hand out their client's.
+func TestTmuxBackends_Environ(t *testing.T) {
+	want := []string{"TMUX=/run/user/1000/tmux-1000/default,111,0"}
 
-	b := tmuxBackend(t)
-	if got := b.Environ(); !slices.Equal(got, []string{"TMUX=" + meta}) {
-		t.Errorf("Environ = %#v, want TMUX set from the session meta", got)
+	if got := tmuxBackend(t).Environ(); !slices.Equal(got, want) {
+		t.Errorf("TmuxPopup.Environ = %#v, want %#v", got, want)
 	}
-
-	inside, err := NewTmuxPopup(Options{SessionMeta: meta, TMUX: "/other,2,0"})
-	if err != nil {
-		t.Fatalf("NewTmuxPopup: %v", err)
-	}
-	if got := inside.Environ(); got != nil {
-		t.Errorf("Environ = %#v, want nil when $TMUX is already set", got)
+	if got := tmuxFloatingPaneBackend(t).Environ(); !slices.Equal(got, want) {
+		t.Errorf("TmuxFloatingPane.Environ = %#v, want %#v", got, want)
 	}
 }
 
@@ -241,85 +208,14 @@ func TestTmuxFloatingPane_ValidateTTY(t *testing.T) {
 	}
 }
 
-// The title is dropped and "--" separates a payload that could start with "-";
-// -d must stay away or the popup never takes the keyboard.
-func TestTmuxFloatingPane_PopupCommand_argvIsQuoted(t *testing.T) {
-	b := tmuxFloatingPaneBackend(t)
-
-	path, args := b.PopupCommand(runinpopup.PopupSpec{
+// new-pane has no title flag, so the spec's title has nowhere to go.
+func TestTmuxFloatingPane_PopupCommand_dropsTitle(t *testing.T) {
+	_, args := tmuxFloatingPaneBackend(t).PopupCommand(runinpopup.PopupSpec{
 		Title:   "editor",
-		Env:     map[string]string{"B": "2", "A": "1"},
-		Command: []string{"vim", "my file.txt"},
+		Command: []string{"true"},
 	})
-	assertPopupCommand(t, path, args, "/usr/bin/tmux", []string{
-		"new-pane",
-		"-t", "work",
-		"-e", "A=1",
-		"-e", "B=2",
-		"--", `'vim' 'my file.txt'`,
-	})
-	if slices.Contains(args, "-d") {
-		t.Error("-d would leave the focus outside the popup")
-	}
-}
-
-func TestTmuxFloatingPane_PopupCommand_noSession(t *testing.T) {
-	b, err := NewTmuxFloatingPane(Options{TMUX: "/tmp/tmux-1000/default,1,0"})
-	if err != nil {
-		t.Fatalf("NewTmuxFloatingPane: %v", err)
-	}
-	path, args := b.PopupCommand(runinpopup.PopupSpec{Command: []string{"true"}})
-	assertPopupCommand(t, path, args, "tmux", []string{"new-pane", "--", `'true'`})
-}
-
-func TestTmuxFloatingPane_Environ(t *testing.T) {
-	meta := "/run/user/1000/tmux-1000/default,111,0"
-
-	if got := tmuxFloatingPaneBackend(t).Environ(); !slices.Equal(got, []string{"TMUX=" + meta}) {
-		t.Errorf("Environ = %#v, want TMUX set from the session meta", got)
-	}
-
-	inside, err := NewTmuxFloatingPane(Options{SessionMeta: meta, TMUX: "/other,2,0"})
-	if err != nil {
-		t.Fatalf("NewTmuxFloatingPane: %v", err)
-	}
-	if got := inside.Environ(); got != nil {
-		t.Errorf("Environ = %#v, want nil when $TMUX is already set", got)
-	}
-}
-
-func TestTmuxAffectedByZoomCrash(t *testing.T) {
-	for _, tc := range []struct {
-		version string
-		want    bool
-		why     string
-	}{
-		{"tmux 3.7b", true, "the version that crashes"},
-		{"tmux 3.7b\n", true, "tmux -V output ends in a newline"},
-		{"tmux 3.7", true, "no suffix sorts before 3.7a"},
-		{"tmux 3.7a", true, ""},
-		{"tmux 3.7c", false, "the fix"},
-		{"tmux 3.7d", false, ""},
-		{"tmux 3.6", true, ""},
-		{"tmux 2.9a", true, "floating panes did not exist; the popup fails on its own"},
-		{"tmux 3.8", false, ""},
-		{"tmux 3.10", false, "the minor is compared as a number, not as text"},
-		{"tmux 4.0", false, ""},
-		{"tmux next-3.8", true, "a dev build's version pins no commit, so it cannot show the fix"},
-		{"tmux master", true, "unparseable"},
-		{"3.7c", true, `the "tmux " prefix is part of the contract`},
-		{"tmux 3.7.1", true, "not a release form tmux prints"},
-		{"tmux 3.", true, "unparseable"},
-		{"tmux ", true, "unparseable"},
-		{"", true, "no output at all"},
-		{"garbage", true, "unparseable"},
-	} {
-		t.Run(tc.version, func(t *testing.T) {
-			if got := tmuxAffectedByZoomCrash(tc.version); got != tc.want {
-				t.Errorf("tmuxAffectedByZoomCrash(%q) = %v, want %v (%s)",
-					tc.version, got, tc.want, tc.why)
-			}
-		})
+	if slices.Contains(args, "-T") || slices.Contains(args, "editor") {
+		t.Errorf("args = %#v, want the title dropped", args)
 	}
 }
 
@@ -346,42 +242,6 @@ func TestZellij_PopupCommand_pinentryHandshake(t *testing.T) {
 		"/bin/bash",
 		"-c",
 		"echo $(tty) >> /tmp/popup/tty && read done < /tmp/popup/done",
-	})
-}
-
-func TestZellij_PopupCommand_argvRunsDirectly(t *testing.T) {
-	b := zellijBackend(t)
-
-	path, args := b.PopupCommand(runinpopup.PopupSpec{Command: []string{"vim", "my file.txt"}})
-	assertPopupCommand(t, path, args, "/usr/bin/zellij", []string{
-		"--session=session-id",
-		"run",
-		"--floating",
-		"--close-on-exit",
-		"--pinned=true",
-		"--",
-		"vim",
-		"my file.txt",
-	})
-}
-
-func TestZellij_PopupCommand_envGoesThroughShell(t *testing.T) {
-	b := zellijBackend(t)
-
-	path, args := b.PopupCommand(runinpopup.PopupSpec{
-		Env:     map[string]string{"B": "two", "A": "it's one"},
-		Command: []string{"env"},
-	})
-	assertPopupCommand(t, path, args, "/usr/bin/zellij", []string{
-		"--session=session-id",
-		"run",
-		"--floating",
-		"--close-on-exit",
-		"--pinned=true",
-		"--",
-		"/bin/bash",
-		"-c",
-		`export A='it'\''s one'; export B='two'; 'env'`,
 	})
 }
 
