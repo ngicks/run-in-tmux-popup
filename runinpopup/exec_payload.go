@@ -1,67 +1,14 @@
 package runinpopup
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"syscall"
 	"time"
-)
-
-// ExecResult is the outcome of one command run inside a popup, as the payload
-// reports it back to the caller. The json tags are a documented wire format:
-// the exec subcommand prints this value verbatim on its stdout.
-type ExecResult struct {
-	// Command is the argv the payload ran.
-	Command []string `json:"command"`
-	// ExitCode is the command's exit status, or -1 when it never started or was
-	// killed by a signal — the convention os/exec itself uses.
-	ExitCode int `json:"exit_code"`
-	// Stdout and Stderr are everything the command wrote, captured in full while
-	// it was drawing on the popup terminal.
-	Stdout string `json:"stdout"`
-	Stderr string `json:"stderr"`
-	// Error says why the command could not be run to a known status: it never
-	// started, or its output could not be relayed. It stays empty whenever the
-	// command ran and ExitCode is its own, however it exited.
-	Error string `json:"error,omitzero"`
-}
-
-// ExecOutcome is what ExecPayload hands back to the popup process it runs in —
-// as opposed to ExecResult, which is what travels to the caller.
-type ExecOutcome struct {
-	// Result is what was reported to the caller. It is the zero value when Ran is
-	// false.
-	Result ExecResult
-	// Ran reports whether the command was attempted at all. It is false only when
-	// the caller was already gone before anything could be tried, so there is no
-	// status to stand in for.
-	Ran bool
-	// Status is the exit status the popup process should carry, so the
-	// multiplexer sees what the command did. It is Result.ExitCode, except that a
-	// signal death — -1 in the JSON, which no exit(2) can carry — becomes
-	// 128+signal, and anything else unusable becomes 1.
-	Status int
-}
-
-// ExecPayloadCommandName is the subcommand the popup re-invokes the payload
-// executable with, and ExecPayloadStartupTimeoutFlag the one flag it may carry
-// along with it:
-//
-//	<PayloadPath> exec-payload [--startup-timeout=<dur>] -- <Command...>
-//
-// The library owns both names because both halves have to agree on them: the
-// caller renders that argv into the popup's command line, and the CLI registers
-// a hidden leaf accepting it and calls ExecPayload.
-const (
-	ExecPayloadCommandName        = "exec-payload"
-	ExecPayloadStartupTimeoutFlag = "startup-timeout"
 )
 
 // ExecPayload is the popup half of the exec exchange: it runs argv on the
@@ -166,51 +113,6 @@ func checkResultChannel(w *os.File) error {
 		)
 	}
 	return nil
-}
-
-func runExecCommand(ctx context.Context, argv []string) (ExecResult, int) {
-	result := ExecResult{Command: argv, ExitCode: -1}
-	if len(argv) == 0 {
-		result.Error = "no command to run"
-		return result, 1
-	}
-
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Stdin = os.Stdin
-	// Both streams are watched on stderr: this process's stdout is the result
-	// channel, while its stderr is the popup's terminal — the exec exchange
-	// allocates nothing for stderr, so it is still the one the user is looking
-	// at.
-	cmd.Stdout = io.MultiWriter(os.Stderr, &stdout)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
-
-	err := cmd.Run()
-	result.Stdout = stdout.String()
-	result.Stderr = stderr.String()
-
-	if err != nil {
-		if _, ok := errors.AsType[*exec.ExitError](err); !ok {
-			result.Error = err.Error()
-			return result, 1
-		}
-	}
-	result.ExitCode = cmd.ProcessState.ExitCode()
-	return result, execProcessStatus(cmd.ProcessState)
-}
-
-// execProcessStatus turns a finished command's state into a status this process
-// can exit with. A signal death is -1, which exit(2) cannot carry, so it becomes
-// the 128+signal every shell reports; anything else unusable becomes 1. The
-// reported ExecResult keeps the raw -1.
-func execProcessStatus(state *os.ProcessState) int {
-	if code := state.ExitCode(); code >= 0 {
-		return code
-	}
-	if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-		return 128 + int(ws.Signal())
-	}
-	return 1
 }
 
 // writeExecResult takes no context on purpose. By the time it runs the command
