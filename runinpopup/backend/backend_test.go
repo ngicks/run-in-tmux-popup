@@ -251,7 +251,7 @@ func TestZellij_Environ(t *testing.T) {
 	}
 }
 
-// Listed explicitly rather than ranging over BackendNames: tmux-floating-pane is
+// Listed explicitly rather than ranging over Names: tmux-floating-pane is
 // the one backend whose Prepare does something, and execs tmux to find out.
 func TestBackendPrepare_isNoOp(t *testing.T) {
 	for _, b := range []runinpopup.Backend{tmuxBackend(t), zellijBackend(t)} {

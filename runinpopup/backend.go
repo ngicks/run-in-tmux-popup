@@ -2,22 +2,8 @@ package runinpopup
 
 import (
 	"context"
-	"fmt"
 	"strings"
 )
-
-// Backend names. They name the popup *mechanism*, not the multiplexer: tmux has
-// two, and they are separate names rather than variants of one another.
-const (
-	BackendTmuxPopup        = "tmux-popup"
-	BackendTmuxFloatingPane = "tmux-floating-pane"
-	BackendZellij           = "zellij"
-)
-
-// BackendNames lists every known backend name in the order reported to users.
-func BackendNames() []string {
-	return []string{BackendTmuxPopup, BackendTmuxFloatingPane, BackendZellij}
-}
 
 // PopupSpec is the payload a popup runs: what to execute, with which
 // environment, under which title. Backends translate it into their own argv.
@@ -52,7 +38,8 @@ func (s PopupSpec) shellCommandLine() string {
 // coordinates of the multiplexer they talk to (binary path, session, client)
 // and are safe to reuse for several popups.
 type Backend interface {
-	// Name reports the backend's name, one of BackendNames.
+	// Name reports the backend's name, one of the names defined by the backend
+	// package.
 	Name() string
 	// PopupCommand returns the argv that opens a popup executing spec. It only
 	// builds the command line — nothing is executed, so it is cheap and testable.
@@ -76,42 +63,6 @@ type Backend interface {
 	//     context that outlives the popup's cancellation, and log its error
 	//     rather than failing the run.
 	Prepare(ctx context.Context) (restore func(context.Context) error, err error)
-}
-
-// DetectBackendName picks a backend name from ambient hints, for callers that
-// were not told which backend to use. Every hint is passed in — the caller
-// reads the environment, the detection itself stays pure:
-//
-//   - userDataKind is PinentryUserData.Kind, the most specific hint since the
-//     gpg-agent wrapper script picked it deliberately. A "_DEBUG" suffix does
-//     not change the mechanism, so the kind is matched by prefix.
-//   - tmuxEnv is $TMUX and zellijEnv is $ZELLIJ, checked in that order. A bare
-//     $TMUX names the multiplexer, not one of its two popup mechanisms, and
-//     resolves to BackendTmuxPopup: display-popup is the older, unconditionally
-//     safe one, so floating panes stay an explicit choice.
-//
-// It returns an error naming the valid backends when nothing matches.
-func DetectBackendName(userDataKind, tmuxEnv, zellijEnv string) (string, error) {
-	switch kind := strings.ToUpper(strings.TrimSpace(userDataKind)); {
-	case strings.HasPrefix(kind, "TMUX_POPUP"):
-		return BackendTmuxPopup, nil
-	case strings.HasPrefix(kind, "TMUX_FLOATING_PANE"):
-		return BackendTmuxFloatingPane, nil
-	case strings.HasPrefix(kind, "ZELLIJ_POPUP"):
-		return BackendZellij, nil
-	}
-	switch {
-	case tmuxEnv != "":
-		return BackendTmuxPopup, nil
-	case zellijEnv != "":
-		return BackendZellij, nil
-	}
-	return "", fmt.Errorf(
-		"cannot detect the popup backend:"+
-			" neither PINENTRY_USER_DATA, $TMUX nor $ZELLIJ names one;"+
-			" select it explicitly, valid values are %s",
-		strings.Join(BackendNames(), ", "),
-	)
 }
 
 // shellQuote renders s as a single POSIX shell word.
