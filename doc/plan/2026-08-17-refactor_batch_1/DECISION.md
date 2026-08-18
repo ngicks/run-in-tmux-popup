@@ -366,3 +366,13 @@ partial-spec field; per-exchange workspace/timeout options; an endpoints
 struct as `AddPayload`'s first parameter (FIFO wiring is launch-layer
 logic, not the constructor's job); insertion-index schemes for placing the
 marshaled input.
+
+## Handshake rename inconsistency (resolved with user, 2026-08-18)
+
+Step 5's instruction to rename `PinentryHandshaker`/`PinentryHandshake`
+to `TTYHandshaker`/`TTYHandshake` conflicts with the "Public surface
+delta" block, which declares itself exhaustive but omits the rename.
+The user picked the rename: the exchange is a TTY rendezvous, not
+pinentry-specific, matching step 5's "backends name no pinentry-specific
+capability" gate. The rename joins the pre-1.0 break set; the delta
+block's omission is treated as an oversight, not a veto.
