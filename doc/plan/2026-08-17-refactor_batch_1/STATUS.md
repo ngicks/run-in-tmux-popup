@@ -35,8 +35,29 @@ no files/env. The two commands' old resolution paths were verified
 statement-identical, so no per-command behavior fork was needed.
 Precedence table asserts full error bytes and was verified by mutation.
 
-Next action: step 4 (popup session + JsonIpcLauncher; migrate exec,
-dissolve ExecOptions/CallExec).
+Step 4 landed 2026-08-18: `JsonIpcLauncher[In, Out]`/`JsonIpcConn` built
+on `PopupLauncher`; exec exchange migrated (`Out = ExecResult`, inner
+command as launch-time input, result JSON on the payload-stdout FIFO);
+`ExecOptions`/`CallExec` deleted; `ExecPayload` loses the result-FIFO
+argv parameter; CLI exec constructs the launchers directly with
+`WorkspaceOptions{NamePrefix, Retain}`. Notable deviations, all
+documented in the code: a leading `\n` liveness probe precedes the
+result JSON on the stream (object bytes unchanged); stdin FIFO is
+allocated exactly when `AddPayload == nil` (no exchange uses both input
+modes; no `CloseSend` yet); rendezvous-failure wording is now the launch
+layer's ("the popup did not reach its payload within …") with the
+distinction from "without reporting a result" preserved and tested;
+`ExecResult.Error` tag is `omitzero` (byte-identical for string).
+
+Open items for later steps: exec debug runs no longer write
+`runworkspace`'s log.txt (dir retention works via WorkspaceOptions;
+debug-log policy is step 6's call, README.md:104 wording included);
+a SIGKILLed caller can leave the popup shell blocked in open(2) on the
+stdout FIFO (graceful timeout paths are covered; noted in code).
+
+Next action: step 5 (TTY rendezvous + Assuan transformer + iopipe;
+migrate pinentry onto PinentryLauncher, dissolve
+PinentryOptions/CallPinentry).
 
 ## Checklist
 
@@ -53,7 +74,7 @@ dissolve ExecOptions/CallExec).
       FIFOs to the passed endpoints)
 - [x] Step 3 — CLI runtime resolver (D5: "Proceed with the P1 CLI
       runtime/backend-resolution extraction")
-- [ ] Step 4 — popup session; exec migrated onto `JsonIpcLauncher` with
+- [x] Step 4 — popup session; exec migrated onto `JsonIpcLauncher` with
       `Out = ExecResult` (D1: "must not duplicate the lifecycle"; D15:
       "`Exec(ctx, v In)` … single entry method"; D14 `ExecOptions`/`CallExec`
       removed; D12 retention reported via log)

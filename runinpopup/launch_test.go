@@ -21,6 +21,7 @@ type shellBackend struct {
 	// pass $TMUX to theirs.
 	environ    []string
 	prepareErr error
+	launchErr  error
 	prepared   int
 	restored   int
 	// launched records every spec the launcher completed and handed over.
@@ -36,6 +37,9 @@ func (b *shellBackend) Name() string { return "shell" }
 
 func (b *shellBackend) Launch(ctx context.Context, spec LaunchSpec) (PopupHandle, error) {
 	b.launched = append(b.launched, spec)
+	if b.launchErr != nil {
+		return nil, b.launchErr
+	}
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", shellPayload(spec))
 	if len(b.environ) > 0 {
@@ -59,6 +63,52 @@ func shellPayload(spec LaunchSpec) string {
 type shellHandle struct{ cmd *exec.Cmd }
 
 func (h shellHandle) Wait() error { return h.cmd.Wait() }
+
+// stalledBackend opens a popup that never reaches its payload: its launcher runs
+// and stays, but the command line wiring the payload's streams is never run, so
+// nothing opens their other end.
+type stalledBackend struct{ *shellBackend }
+
+func (b *stalledBackend) Launch(ctx context.Context, spec LaunchSpec) (PopupHandle, error) {
+	spec.Command, spec.Script = nil, "sleep 5"
+	return b.shellBackend.Launch(ctx, spec)
+}
+
+// failingLauncherBackend opens a popup that goes nowhere: its launcher starts
+// and then fails, the way a mechanism that could not create its pane does, so
+// nothing ever opens the payload's end of the streams.
+type failingLauncherBackend struct {
+	*shellBackend
+	err error
+}
+
+func (b *failingLauncherBackend) Launch(_ context.Context, spec LaunchSpec) (PopupHandle, error) {
+	b.launched = append(b.launched, spec)
+	return failedHandle{b.err}, nil
+}
+
+type failedHandle struct{ err error }
+
+func (h failedHandle) Wait() error { return h.err }
+
+// detachedBackend is a floating-pane-style mechanism: its launcher returns as
+// soon as the popup exists, long before the payload running in it is done.
+type detachedBackend struct{ *shellBackend }
+
+func (b *detachedBackend) Launch(ctx context.Context, spec LaunchSpec) (PopupHandle, error) {
+	handle, err := b.shellBackend.Launch(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	// The popup outlives the launcher this stands in for, so the process behind
+	// it is reaped on the side.
+	go func() { _ = handle.Wait() }()
+	return detachedHandle{}, nil
+}
+
+type detachedHandle struct{}
+
+func (detachedHandle) Wait() error { return nil }
 
 func (b *shellBackend) Prepare(context.Context) (func(context.Context) error, error) {
 	if b.prepareErr != nil {

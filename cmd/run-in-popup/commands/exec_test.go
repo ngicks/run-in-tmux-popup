@@ -3,6 +3,7 @@ package commands
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -135,6 +136,30 @@ func TestExecFlagOverrides(t *testing.T) {
 				t.Errorf("Timeouts = %+v, want the zero partial: no flag feeds it", got.Timeouts)
 			}
 		})
+	}
+}
+
+// The two halves have to give up at the same time, so a caller that chose its
+// own bound has to get it across — and the only channel it has is the argv the
+// popup runs.
+func TestExecPayloadArgv(t *testing.T) {
+	command := []string{"make", "test"}
+	payload := "/bin/run-in-popup"
+
+	def := execPayloadArgv(payload, 0, command)
+	want := []string{payload, runinpopup.ExecPayloadCommandName, "--", "make", "test"}
+	if !slices.Equal(def, want) {
+		t.Errorf("argv = %q, want %q: the default bound needs no flag", def, want)
+	}
+
+	custom := execPayloadArgv(payload, 5*time.Second, command)
+	want = []string{
+		payload, runinpopup.ExecPayloadCommandName,
+		"--" + runinpopup.ExecPayloadStartupTimeoutFlag + "=5s",
+		"--", "make", "test",
+	}
+	if !slices.Equal(custom, want) {
+		t.Errorf("argv = %q, want %q", custom, want)
 	}
 }
 

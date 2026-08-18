@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -64,10 +63,9 @@ func TestExitStatus_fromTheExecPayloadLeaf(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fifo := mkfifo(t)
-			drained := drain(t, fifo)
+			reported := popupStdout(t)
 
-			withArgs(t, "exec-payload", fifo, "--", "sh", "-c", tc.script)
+			withArgs(t, "exec-payload", "--", "sh", "-c", tc.script)
 			err := commands.Execute(context.Background())
 
 			code, report := exitStatus(err)
@@ -78,23 +76,21 @@ func TestExitStatus_fromTheExecPayloadLeaf(t *testing.T) {
 				t.Errorf("report = %v, want %v: a bare status has nothing to add",
 					report, tc.wantReport)
 			}
-			if got := drained(); !bytes.Contains(got, []byte(tc.wantJSON)) {
+			if got := reported(); !bytes.Contains(got, []byte(tc.wantJSON)) {
 				t.Errorf("reported %s, want it to contain %s", got, tc.wantJSON)
 			}
 		})
 	}
 }
 
-// Nothing is reading the fifo and the run is already cancelled, so the payload
-// never gets to run the command: no status to carry, and the failure has to be
-// printed like any other.
+// Nobody holds the other end of the result channel, so the payload never gets to
+// run the command: no status to carry, and the failure has to be printed like
+// any other.
 func TestExitStatus_execPayloadWithNoCaller(t *testing.T) {
-	withArgs(t, "exec-payload", mkfifo(t), "--", "true")
+	abandonedStdout(t)
+	withArgs(t, "exec-payload", "--", "true")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	err := commands.Execute(ctx)
+	err := commands.Execute(context.Background())
 	if err == nil {
 		t.Fatal("a payload with nobody listening must fail")
 	}
@@ -103,34 +99,40 @@ func TestExitStatus_execPayloadWithNoCaller(t *testing.T) {
 	}
 }
 
-func mkfifo(t *testing.T) string {
+// popupStdout stands in for the fifo exec wires the payload's stdout to, and
+// hands over what the caller would have read.
+func popupStdout(t *testing.T) func() []byte {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "result")
-	if err := syscall.Mknod(path, syscall.S_IFIFO|0o600, 0); err != nil {
-		t.Fatalf("mknod %q: %v", path, err)
+	f, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
+	if err != nil {
+		t.Fatalf("creating the stdout stand-in: %v", err)
 	}
-	return path
-}
+	saved := os.Stdout
+	os.Stdout = f
+	t.Cleanup(func() { os.Stdout = saved; f.Close() })
 
-// drain stands in for the process that opened the popup: the payload waits for
-// this end before it runs anything.
-func drain(t *testing.T, path string) func() []byte {
-	t.Helper()
-	ch := make(chan []byte, 1)
-	go func() {
-		f, err := os.OpenFile(path, os.O_RDONLY, 0)
-		if err != nil {
-			ch <- nil
-			return
-		}
-		defer f.Close()
-		b, _ := io.ReadAll(f)
-		ch <- b
-	}()
 	return func() []byte {
 		t.Helper()
-		return <-ch
+		b, err := os.ReadFile(f.Name())
+		if err != nil {
+			t.Fatalf("reading %s: %v", f.Name(), err)
+		}
+		return b
 	}
+}
+
+// abandonedStdout points os.Stdout at a pipe nobody holds the other end of: the
+// caller opened the popup and gave up on it.
+func abandonedStdout(t *testing.T) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	r.Close()
+	saved := os.Stdout
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = saved; w.Close() })
 }
 
 func withArgs(t *testing.T, args ...string) {

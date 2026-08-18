@@ -2,13 +2,15 @@ package commands
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
+	"slices"
+	"time"
 
 	"github.com/ngicks/go-common/contextkey"
 	"github.com/spf13/cobra"
 
-	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/cli"
 )
@@ -95,26 +97,59 @@ func runExec(
 		return err
 	}
 
-	workspace, err := runworkspace.Open(
-		"run-in-popup-exec-*",
-		rt.UserData.Debug(),
-		contextkey.ValueSlogLoggerFallback(ctx, slog.Default()),
-	)
+	payloadPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locating this executable for the exec payload: %w", err)
+	}
+
+	popup := &runinpopup.PopupLauncher{
+		Backend: rt.Backend,
+		Logger:  contextkey.ValueSlogLoggerFallback(ctx, slog.Default()),
+		Workspace: runinpopup.WorkspaceOptions{
+			NamePrefix: "run-in-popup-exec-",
+			Retain:     rt.UserData.Debug(),
+		},
+	}
+	exchange := &runinpopup.JsonIpcLauncher[[]string, runinpopup.ExecResult]{
+		Popup:       popup,
+		PartialSpec: runinpopup.PopupSpec{Title: flagTitle},
+		AddPayload: func(command []string, spec runinpopup.PopupSpec) runinpopup.PopupSpec {
+			spec.Command = execPayloadArgv(payloadPath, popup.StartupTimeout, command)
+			return spec
+		},
+	}
+
+	conn, err := exchange.Exec(ctx, command)
 	if err != nil {
 		return err
 	}
-	defer workspace.Close()
-
-	result, err := runinpopup.CallExec(ctx, rt.Backend, runinpopup.ExecOptions{
-		Logger:  workspace.Logger,
-		TempDir: workspace.Dir,
-		Command: command,
-		Title:   flagTitle,
-	})
-	if err != nil {
+	result, reported := <-conn.Results()
+	// The payload answers once, but the stream still has to be drained: the
+	// exchange has not ended while anything is left on it.
+	for range conn.Results() {
+	}
+	if err := conn.Wait(); err != nil {
 		return err
+	}
+	if !reported {
+		return errors.New("the popup payload exited without reporting a result")
 	}
 	return cli.RenderExecResult(cmd.OutOrStdout(), result)
+}
+
+// execPayloadArgv builds the popup's argv: the payload subcommand, the bound
+// both halves give the rendezvous, and the user's command behind the "--" that
+// separates it from them. The bound only appears when it is not the one the
+// payload would pick anyway, so the ordinary popup command line — the one that
+// shows up in ps — stays as short as it was.
+func execPayloadArgv(payloadPath string, startupTimeout time.Duration, command []string) []string {
+	argv := []string{payloadPath, runinpopup.ExecPayloadCommandName}
+	if startupTimeout != 0 {
+		argv = append(argv, fmt.Sprintf(
+			"--%s=%s", runinpopup.ExecPayloadStartupTimeoutFlag, startupTimeout,
+		))
+	}
+	return slices.Concat(argv, []string{"--"}, command)
 }
 
 // execCommandArgs picks the command out of a parsed invocation: everything after

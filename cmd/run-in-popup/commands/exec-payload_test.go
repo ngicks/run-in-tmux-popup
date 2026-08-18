@@ -4,39 +4,47 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/spf13/cobra"
 )
 
-// payloadFifo makes the fifo and stands in for the process that opened the
-// popup: the payload waits for this read end before it runs anything.
-func payloadFifo(t *testing.T) (path string, drained func() []byte) {
+// popupStdout points os.Stdout at a file for the duration of the test: the
+// payload reports on its own stdout, which exec has wired to a FIFO of its own.
+func popupStdout(t *testing.T) func() []byte {
 	t.Helper()
-	path = filepath.Join(t.TempDir(), "result")
-	if err := syscall.Mknod(path, syscall.S_IFIFO|0o600, 0); err != nil {
-		t.Fatalf("mknod %q: %v", path, err)
+	f, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
+	if err != nil {
+		t.Fatalf("creating the stdout stand-in: %v", err)
 	}
-	ch := make(chan []byte, 1)
-	go func() {
-		f, err := os.OpenFile(path, os.O_RDONLY, 0)
-		if err != nil {
-			ch <- nil
-			return
-		}
-		defer f.Close()
-		b, _ := io.ReadAll(f)
-		ch <- b
-	}()
-	return path, func() []byte {
+	saved := os.Stdout
+	os.Stdout = f
+	t.Cleanup(func() { os.Stdout = saved; f.Close() })
+
+	return func() []byte {
 		t.Helper()
-		return <-ch
+		b, err := os.ReadFile(f.Name())
+		if err != nil {
+			t.Fatalf("reading %s: %v", f.Name(), err)
+		}
+		return b
 	}
+}
+
+// abandonedStdout points os.Stdout at a pipe nobody holds the other end of,
+// which is what a caller that gave up on the exchange leaves behind.
+func abandonedStdout(t *testing.T) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	r.Close()
+	saved := os.Stdout
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = saved; w.Close() })
 }
 
 func payloadCmd(ctx context.Context) *cobra.Command {
@@ -48,13 +56,9 @@ func payloadCmd(ctx context.Context) *cobra.Command {
 // The command ran, so its status is the leaf's own: an exit-code error, bare,
 // because the command already wrote whatever it had on the popup terminal.
 func TestRunExecPayload_carriesTheCommandStatus(t *testing.T) {
-	fifo, drained := payloadFifo(t)
+	reported := popupStdout(t)
 
-	err := runExecPayload(
-		payloadCmd(t.Context()),
-		[]string{fifo, "sh", "-c", "exit 5"},
-		0,
-	)
+	err := runExecPayload(payloadCmd(t.Context()), []string{"sh", "-c", "exit 5"}, 0)
 
 	coded, ok := errors.AsType[*exitCodeError](err)
 	if !ok {
@@ -67,24 +71,19 @@ func TestRunExecPayload_carriesTheCommandStatus(t *testing.T) {
 		t.Errorf("Unwrap() = %v, want nil: a successful report has nothing to print",
 			coded.Unwrap())
 	}
-	if got := drained(); !bytes.Contains(got, []byte(`"exit_code":5`)) {
+	if got := reported(); !bytes.Contains(got, []byte(`"exit_code":5`)) {
 		t.Errorf("reported %s, want the status in the JSON too", got)
 	}
 }
 
-// Nothing is reading and the run is already over, so the command never runs:
-// there is no status to stand in for, and the failure is reported plainly.
+// Nothing is holding the result channel and the run is already over, so the
+// command never runs: there is no status to stand in for, and the failure is
+// reported plainly.
 func TestRunExecPayload_withNoCallerListening(t *testing.T) {
-	fifo := filepath.Join(t.TempDir(), "result")
-	if err := syscall.Mknod(fifo, syscall.S_IFIFO|0o600, 0); err != nil {
-		t.Fatalf("mknod %q: %v", fifo, err)
-	}
-	marker := filepath.Join(filepath.Dir(fifo), "ran")
+	abandonedStdout(t)
+	marker := filepath.Join(t.TempDir(), "ran")
 
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-	defer cancel()
-
-	err := runExecPayload(payloadCmd(ctx), []string{fifo, "touch", marker}, 0)
+	err := runExecPayload(payloadCmd(t.Context()), []string{"touch", marker}, 0)
 
 	if err == nil {
 		t.Fatal("a payload with nobody listening must fail")
@@ -94,11 +93,5 @@ func TestRunExecPayload_withNoCallerListening(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Error("the command ran anyway")
-	}
-}
-
-func TestRunExecPayload_rejectsAnEmptyFifoPath(t *testing.T) {
-	if err := runExecPayload(payloadCmd(t.Context()), []string{"", "true"}, 0); err == nil {
-		t.Fatal("an empty fifo path must be rejected")
 	}
 }

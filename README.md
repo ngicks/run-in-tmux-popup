@@ -313,7 +313,7 @@ A few things worth knowing:
   reaches `tmux-popup` (as `-T`) and `zellij` (as `--name`).
 
 The popup runs this same binary again, as a hidden `exec-payload` subcommand
-holding the path of the FIFO the result travels back through. It is an
+whose stdout is the FIFO the result travels back through. It is an
 implementation detail — never invoke it by hand.
 
 ## Deprecated: legacy binaries
