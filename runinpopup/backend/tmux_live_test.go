@@ -1,3 +1,13 @@
+// The tests in this file start real tmux servers, so they stay out of the
+// default suite. Enable them with
+//
+//	go test -tags integration ./...
+//
+// on a host that permits private tmux sockets: every server here lives on its
+// own -L socket, never the user's default one.
+//
+//go:build integration
+
 package backend
 
 import (

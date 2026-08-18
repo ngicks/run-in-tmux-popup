@@ -60,6 +60,15 @@ type PinentryOptions struct {
 	// Timeouts bounds each stage of the exchange. Zero fields fall back to
 	// DefaultConfig().Timeouts.
 	Timeouts TimeoutsConfig
+
+	// The Assuan endpoints the proxy relays between, nil meaning os.Stdin,
+	// os.Stdout and os.Stderr. Unexported because a caller has nothing to gain
+	// from redirecting them — gpg-agent speaks Assuan over this process's own
+	// stdio and nowhere else; they exist so tests can drive the exchange without
+	// handing the flow the test runner's stdin, which it closes. *os.File rather
+	// than io.Reader/io.Writer so the descriptors still reach pinentry
+	// unwrapped.
+	stdin, stdout, stderr *os.File
 }
 
 func (o PinentryOptions) normalized() (PinentryOptions, error) {
@@ -67,6 +76,9 @@ func (o PinentryOptions) normalized() (PinentryOptions, error) {
 		return o, errors.New("PinentryOptions.TempDir must be set")
 	}
 	def := DefaultConfig()
+	o.stdin = cmp.Or(o.stdin, os.Stdin)
+	o.stdout = cmp.Or(o.stdout, os.Stdout)
+	o.stderr = cmp.Or(o.stderr, os.Stderr)
 	o.PinentryPath = cmp.Or(o.PinentryPath, def.PinentryPath)
 	o.Timeouts.Overall = cmp.Or(o.Timeouts.Overall, def.Timeouts.Overall)
 	o.Timeouts.TTYRead = cmp.Or(o.Timeouts.TTYRead, def.Timeouts.TTYRead)
@@ -223,8 +235,8 @@ func callPinentry(
 		return err
 	}
 
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = opts.stdout
+	cmd.Stderr = opts.stderr
 
 	err = cmd.Start()
 	if err != nil {
@@ -249,7 +261,7 @@ func callPinentry(
 		// don't wait on this gorountine.
 		// I'm not sure but closing os.Stdin doesn't have
 		// effect to unblock reading on it.
-		_, _ = io.Copy(w, os.Stdin)
+		_, _ = io.Copy(w, opts.stdin)
 		logger.Debug("piping done")
 	}()
 
@@ -302,7 +314,7 @@ func callPinentry(
 	)
 	logger.Debug(
 		"stdin closed",
-		slog.Any("err", os.Stdin.Close()),
+		slog.Any("err", opts.stdin.Close()),
 	)
 
 	wg.Wait()

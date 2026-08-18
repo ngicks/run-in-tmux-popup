@@ -1,20 +1,29 @@
 # STATUS — refactor batch 1
 
-State: **planned** — all open questions (1–14) resolved by the user on
-2026-08-18, including the D13–D15 public API relayering
-(`PopupLauncher`/`PopupCommand` launch layer with stream-free `PopupSpec`
-template vs one-shot `LaunchSpec`, uniform "nil = no allocation" payload
-streams with `StdoutPipe`/`StderrPipe` request flags, `PinentryLauncher`/
-`JsonIpcLauncher[In, Out]` exchange layer); traceability gate re-run
-against D1–D15. Implementation not started.
+State: **in progress** — step 1 landed 2026-08-18: six hermetic
+characterization tests for `callPinentry` (fake handshaking backend +
+fake pinentry via the test binary; three unexported stdio seams on
+`PinentryOptions`), live tmux tests moved behind `//go:build integration`,
+golden table tests for `cli.RenderConfig`/`cli.RenderExecResult`.
+Hermeticity verified by running the default suite with unusable
+tmux/zellij stubs first in PATH; `go vet` clean with and without the
+`integration` tag.
 
-Next action: begin step 1 (hermetic test split + pinentry characterization)
-in the `refactor-batch-1` worktree; run `go test ./...` and `go vet ./...`
-there after the step.
+Finding recorded during step 1 (pre-existing, deliberately not fixed):
+`go test -race` fails on the new pinentry tests — `callPinentry` reads
+the popup launcher's stdout/stderr buffers while os/exec copier
+goroutines may still write (no `Wait` on the launcher, so no
+happens-before edge); the launcher `exec.Cmd` is also never waited on
+(goroutine/fd/zombie leak per call). Both are owned by the step 4–5
+restructure of the launch/pinentry flow.
+
+Next action: step 2 (internal tmux/zellij clients, backend vocabulary
+move, `Launch`/`PopupHandle` contract break, `PopupLauncher`/`PopupCommand`
+launch layer, delete `Run`/`RunOptions`).
 
 ## Checklist
 
-- [ ] Step 1 — hermetic test split + pinentry characterization (P0: "An
+- [x] Step 1 — hermetic test split + pinentry characterization (P0: "An
       Assuan transcript test proves the exact bytes forwarded to pinentry")
 - [ ] Step 2 — internal clients + vocabulary + contract break (D6: "delegate
       executable operations to those internal clients"; D4: "own backend

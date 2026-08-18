@@ -23,6 +23,9 @@ import (
 const execPayloadReexecEnv = "RUNINPOPUP_TEST_EXEC_PAYLOAD"
 
 func TestMain(m *testing.M) {
+	if code, ok := runFakePinentry(); ok {
+		os.Exit(code)
+	}
 	if os.Getenv(execPayloadReexecEnv) == "" {
 		os.Exit(m.Run())
 	}
