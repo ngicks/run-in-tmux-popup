@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/cli"
 )
 
 const pinentryLong = `pinentry proxies the Assuan exchange gpg-agent runs over stdin/stdout to a
@@ -60,8 +62,7 @@ func pinentryCmd(parent *cobra.Command, flagConfig *string) {
 		&flagBackend,
 		"backend",
 		"",
-		`popup backend, "tmux-popup", "tmux-floating-pane" or "zellij"`+
-			` (default: auto-detected)`,
+		fmt.Sprintf("popup backend, %s (default: auto-detected)", cli.BackendNameList()),
 	)
 	cmd.Flags().StringVar(
 		&flagPinentry,

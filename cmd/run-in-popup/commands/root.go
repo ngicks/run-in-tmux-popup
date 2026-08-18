@@ -57,16 +57,6 @@ func rootCmd() *cobra.Command {
 	execCmd(cmd, &flagConfig)
 	execPayloadCmd(cmd)
 
-	// TODO: declare additional root flags inside the `var (...)` block above
-	// and bind them with `cmd.PersistentFlags().<Type>Var(&flag, ...)`. Extend
-	// the RunE closure to forward captured values into runRoot.
-
-	// TODO: wire additional subcommands here, passing &flagConfig to the ones
-	// that load config, e.g.:
-	//   runCmd(cmd, &flagConfig)
-
-	// TODO: you may add initialization logic for root internal service construct here.
-
 	return cmd
 }
 

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -115,4 +117,92 @@ func TestRenderConfig_formatFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ConfigDocs is written by hand so the descriptions can say something a struct
+// cannot; reflection lives here instead, where it holds the table to the type
+// it documents. A field added to runinpopup.Config without a doc entry — or the
+// other way round — fails this test rather than quietly vanishing from help.
+func TestConfigDocs_documentEveryConfigField(t *testing.T) {
+	want := configTypeLines(t, reflect.TypeFor[runinpopup.Config](), "", "")
+	got := configDocLines(ConfigDocs(), "", "")
+
+	if !slices.Equal(got, want) {
+		t.Errorf(
+			"ConfigDocs and runinpopup.Config disagree:\n\tdocumented:\n\t\t%s"+
+				"\n\tdeclared:\n\t\t%s",
+			strings.Join(got, "\n\t\t"),
+			strings.Join(want, "\n\t\t"),
+		)
+	}
+}
+
+func TestConfigDocs_describeEveryField(t *testing.T) {
+	var walk func(docs []ConfigFieldDoc, prefix string)
+	walk = func(docs []ConfigFieldDoc, prefix string) {
+		for _, d := range docs {
+			if d.Desc == "" {
+				t.Errorf("%s%s has no description, so help would show a bare row", prefix, d.Name)
+			}
+			walk(d.Fields, prefix+d.Name+".")
+		}
+	}
+	walk(ConfigDocs(), "")
+}
+
+func TestConfigSchemaHelp_showsEveryDocumentedField(t *testing.T) {
+	help := ConfigSchemaHelp()
+
+	var walk func(docs []ConfigFieldDoc, keyPrefix string)
+	walk = func(docs []ConfigFieldDoc, keyPrefix string) {
+		for _, d := range docs {
+			key := keyPrefix + d.Key
+			for _, want := range []string{"." + d.Name, d.Type, "(" + key + ")", d.Desc} {
+				if !strings.Contains(help, want) {
+					t.Errorf("ConfigSchemaHelp is missing %q of %s:\n%s", want, key, help)
+				}
+			}
+			walk(d.Fields, key+".")
+		}
+	}
+	walk(ConfigDocs(), "")
+}
+
+// configDocLines renders a doc tree as one line per node: the path a --format
+// template addresses, the key the config file spells, and the type. A grouping
+// node has no type of its own, so its line ends after the key.
+func configDocLines(docs []ConfigFieldDoc, goPrefix, jsonPrefix string) []string {
+	var lines []string
+	for _, d := range docs {
+		lines = append(lines, configSchemaLine(goPrefix+"."+d.Name, jsonPrefix+d.Key, d.Type))
+		lines = append(
+			lines,
+			configDocLines(d.Fields, goPrefix+"."+d.Name, jsonPrefix+d.Key+".")...)
+	}
+	return lines
+}
+
+// configTypeLines renders the same lines off the struct itself, so the two can
+// be compared.
+func configTypeLines(t *testing.T, typ reflect.Type, goPrefix, jsonPrefix string) []string {
+	t.Helper()
+	var lines []string
+	for field := range typ.Fields() {
+		key, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if key == "" {
+			t.Errorf("%s.%s: no json tag to document", typ, field.Name)
+		}
+		goPath := goPrefix + "." + field.Name
+		if field.Type.Kind() == reflect.Struct {
+			lines = append(lines, configSchemaLine(goPath, jsonPrefix+key, ""))
+			lines = append(lines, configTypeLines(t, field.Type, goPath, jsonPrefix+key+".")...)
+			continue
+		}
+		lines = append(lines, configSchemaLine(goPath, jsonPrefix+key, field.Type.String()))
+	}
+	return lines
+}
+
+func configSchemaLine(goPath, jsonPath, typeName string) string {
+	return strings.TrimSpace(goPath + " (" + jsonPath + ") " + typeName)
 }

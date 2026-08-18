@@ -91,8 +91,21 @@ byte-identical against pre-edit binaries across 16 scenarios each.
 Step 4's open item is resolved: exec debug runs write log.txt again
 through the same helper.
 
-Next action: step 8 (config schema source + residue cleanup), then the
-final review/test gate.
+Step 8 landed 2026-08-18: `runinpopup/cli` owns the schema description
+(`ConfigFieldDoc`/`ConfigDocs`/`ConfigSchemaHelp`) and the backend name
+list (`BackendNameList` off `backend.Names()`); `run-in-popup config`
+help renders from them (now names `tmux-floating-pane`; columns
+machine-aligned). Reflection lives in tests only: mirror test between
+`Config`/`PartialConfig` JSON trees, an Apply-reaches-every-field test
+(closing the forgotten-merge-branch gap), env-tag match, docs/help
+coverage, and Cobra-level guards — each verified to fail by injecting a
+scaffold field. `Apply` stays hand-written (two branches + delegate;
+codegen judged not worth it). Scaffold TODOs in root.go removed. Config
+file schema/JSON bytes unchanged.
+
+All eight steps are done. Next action: refresh README's stale Library
+section (describes the removed pre-break API), then the final
+ng-reviewer + ng-test-runner gate.
 
 ## Checklist
 
@@ -123,7 +136,7 @@ final review/test gate.
       D1: shims no longer create their own run directories)
 - [x] Step 7 — mechanical exec split (P2: "exported API and JSON are
       byte-for-byte unchanged")
-- [ ] Step 8 — config schema source + residue cleanup (P2: "one clear
+- [x] Step 8 — config schema source + residue cleanup (P2: "one clear
       test/generation failure at every contract"; P3 residue)
 
 ## Open questions

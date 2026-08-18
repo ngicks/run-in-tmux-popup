@@ -63,8 +63,7 @@ func execCmd(parent *cobra.Command, flagConfig *string) {
 		&flagBackend,
 		"backend",
 		"",
-		`popup backend, "tmux-popup", "tmux-floating-pane" or "zellij"`+
-			` (default: auto-detected)`,
+		fmt.Sprintf("popup backend, %s (default: auto-detected)", cli.BackendNameList()),
 	)
 	cmd.Flags().StringVar(
 		&flagTitle,
