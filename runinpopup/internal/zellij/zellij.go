@@ -1,7 +1,8 @@
 // Package zellij speaks to the zellij executable: it builds every argv this
 // module sends to it, including the shell wrapping zellij needs for payloads it
-// cannot run as a bare argv. Callers decide which zellij operation expresses
-// their popup; how zellij is asked for it lives here.
+// cannot run as a bare argv, and the environment file such a payload sources.
+// Callers decide which zellij operation expresses their popup; how zellij is
+// asked for it lives here.
 package zellij
 
 import (
@@ -10,7 +11,9 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -50,9 +53,12 @@ type RunRequest struct {
 	SessionId string
 	// Title names the pane (--name). Empty leaves zellij's default.
 	Title string
-	// Env is exported by the shell the payload is wrapped in: zellij has no
-	// environment flag of its own.
-	Env map[string]string
+	// EnvFile is a shell file the payload sources before it runs, holding the
+	// pane's environment. zellij has no environment flag of its own, and an argv
+	// is readable by every process for as long as the pane lives, so the values
+	// travel in a file — WriteEnvFile writes one — and only its path is on the
+	// command line.
+	EnvFile string
 	// Command is the argv the pane runs.
 	Command []string
 	// Script is a raw shell command line taking precedence over Command.
@@ -129,18 +135,46 @@ func (l *Launcher) Wait() error {
 }
 
 // payload renders what the pane executes. zellij runs an argv directly, so a
-// script payload — or an env injection, for which zellij has no flag — is
+// script payload — or an environment, which only a shell can read in — is
 // wrapped in a shell.
 func (c *Client) payload(req RunRequest) []string {
-	if req.Script == "" && len(req.Env) == 0 {
+	if req.Script == "" && req.EnvFile == "" {
 		return slices.Clone(req.Command)
 	}
-	var sb strings.Builder
-	for _, k := range slices.Sorted(maps.Keys(req.Env)) {
-		fmt.Fprintf(&sb, "export %s=%s; ", k, shellargv.Quote(req.Env[k]))
+	line := commandLine(req.Command, req.Script)
+	if req.EnvFile != "" {
+		// A pane that could not read its environment must not run the payload
+		// without it, hence "&&" rather than the ";" an inline export would take;
+		// the payload is grouped so that the gate covers all of it and not just
+		// the first command of a Script. The newline is what makes the closing
+		// brace a command of its own, whatever the payload ends with.
+		line = fmt.Sprintf(". %s && { %s\n}", shellargv.Quote(req.EnvFile), line)
 	}
-	sb.WriteString(commandLine(req.Command, req.Script))
-	return []string{c.shell, "-c", sb.String()}
+	return []string{c.shell, "-c", line}
+}
+
+// envFileName is what WriteEnvFile calls its file. The work directory it lands
+// in also holds the launch's payload FIFOs and, during a pinentry exchange, the
+// handshake ones, so the name stays clear of all of theirs.
+const envFileName = "env"
+
+// WriteEnvFile writes env as a shell file in dir and returns its path, for
+// RunRequest.EnvFile. It is the counterpart of the sourcing payload renders:
+// where a multiplexer has no environment flag, this is how the values reach the
+// pane without passing through an argv.
+//
+// The file is mode 0600 — it exists to keep the values off a command line every
+// process can read, and would be no improvement if it were readable too.
+func WriteEnvFile(dir string, env map[string]string) (string, error) {
+	var sb strings.Builder
+	for _, k := range slices.Sorted(maps.Keys(env)) {
+		fmt.Fprintf(&sb, "export %s=%s\n", k, shellargv.Quote(env[k]))
+	}
+	path := filepath.Join(dir, envFileName)
+	if err := os.WriteFile(path, []byte(sb.String()), 0o600); err != nil {
+		return "", fmt.Errorf("writing the popup environment: %w", err)
+	}
+	return path, nil
 }
 
 // commandLine renders a payload as a single shell command line.

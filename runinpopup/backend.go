@@ -13,8 +13,9 @@ type PopupSpec struct {
 	// leaves the backend's default.
 	Title string
 	// Env is injected into the popup process (tmux: -e KEY=VALUE; zellij has no
-	// such flag, so its backend exports them from the shell it wraps the payload
-	// in). Map iteration order never reaches the argv: backends sort by key.
+	// such flag, so its backend writes the values into the launch's work
+	// directory and has the payload source them). Map iteration order never
+	// reaches the argv: backends sort by key.
 	Env map[string]string
 	// Command is the argv executed inside the popup. Backends whose popup
 	// mechanism only accepts a shell command line quote and join it.
@@ -37,6 +38,14 @@ type LaunchSpec struct {
 	Env     map[string]string
 	Command []string
 	Script  string
+
+	// WorkDir is the launch's private mode-0700 scratch directory, present
+	// whenever the launch has one: it already holds the payload FIFOs named in
+	// the command line above, and a backend needing a file of its own — an
+	// environment its multiplexer has no flag for, say — puts it here. The
+	// launch gives the directory back when it is over, so nothing written into
+	// it needs a lifetime of its own.
+	WorkDir string
 
 	// Stdin, Stdout and Stderr are the endpoints the payload's stdio is
 	// connected to for this launch, nil meaning "left on the popup's terminal".

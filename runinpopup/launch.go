@@ -38,7 +38,8 @@ const (
 	fifoOpenRetryInterval = 20 * time.Millisecond
 )
 
-// WorkspaceOptions configures the directory holding a launch's payload FIFOs.
+// WorkspaceOptions configures a launch's work directory: the payload FIFOs and
+// whatever the backend puts beside them.
 type WorkspaceOptions struct {
 	// Dir, when non-empty, is the work directory holding the FIFOs; the caller
 	// owns its lifetime and the launch never removes it. Empty means the launch
@@ -106,8 +107,8 @@ type PopupLauncher struct {
 	Backend Backend
 	// Logger receives progress logs. nil discards them.
 	Logger *slog.Logger
-	// Workspace configures the directory holding the payload FIFOs. It is only
-	// consulted by launches that allocate one.
+	// Workspace configures the launch's work directory. It is only consulted by
+	// launches that need one.
 	Workspace WorkspaceOptions
 	// StartupTimeout bounds the rendezvous on each payload FIFO — how long the
 	// popup has to reach the payload and open its end. Zero means 30s.
@@ -119,8 +120,9 @@ type PopupLauncher struct {
 // This is launch-level "execute": it allocates a FIFO for each stream named in
 // streams, completes the spec into the one-shot LaunchSpec that redirects the
 // payload's stdio into those FIFOs, prepares the multiplexer, launches, and
-// starts relaying the FIFOs to their endpoints. A launch naming no stream at all
-// allocates no workspace and leaves the spec's command line untouched.
+// starts relaying the FIFOs to their endpoints. A launch naming no stream leaves
+// the spec's command line untouched, and one needing neither a stream nor a work
+// directory for its environment opens no workspace at all.
 //
 // The returned command owns what the launch took, and gives it back when its
 // Wait returns.
@@ -167,12 +169,19 @@ func (l *PopupLauncher) Exec(
 	}
 
 	set, stdoutPipe, stderrPipe := payloadStreams(streams)
-	if len(set) > 0 {
+	// An environment opens the directory too: a backend whose multiplexer has no
+	// environment flag has nowhere but the workspace to put one out of the argv.
+	// Asked here rather than of the backend, so a spec's needs alone decide what
+	// a launch allocates; the tmux backends have their flag and leave the
+	// directory empty, which is cheaper than negotiating with every backend.
+	var workDir string
+	if len(set) > 0 || len(spec.Env) > 0 {
 		dir, releaseWorkspace, err := l.Workspace.open(logger)
 		if err != nil {
 			return nil, err
 		}
 		rollback = append(rollback, releaseWorkspace)
+		workDir = dir
 		for _, s := range set {
 			s.path = filepath.Join(dir, s.name)
 			if err := syscall.Mknod(s.path, syscall.S_IFIFO|0o600, 0); err != nil {
@@ -187,6 +196,7 @@ func (l *PopupLauncher) Exec(
 		Env:     spec.Env,
 		Command: command,
 		Script:  script,
+		WorkDir: workDir,
 	}
 	for _, s := range set {
 		s.wire(&launchSpec)

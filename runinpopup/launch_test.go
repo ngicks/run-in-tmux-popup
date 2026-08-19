@@ -215,6 +215,9 @@ func TestPopupLauncher_Exec_withoutStreams(t *testing.T) {
 	if spec.Stdin != nil || spec.Stdout != nil || spec.Stderr != nil {
 		t.Error("nothing was allocated, so every stdio must stay on the popup's terminal")
 	}
+	if spec.WorkDir != "" {
+		t.Errorf("WorkDir = %q, want none: the launch needed no directory", spec.WorkDir)
+	}
 	if r, ok := popup.StdoutPipe(); ok || r != nil {
 		t.Error("StdoutPipe must report that nothing was piped")
 	}
@@ -443,6 +446,38 @@ func TestPopupLauncher_Exec_prepareFailureAborts(t *testing.T) {
 	_, err := launcher.Exec(t.Context(), PopupSpec{Script: "exit 0"}, PopupStreams{})
 	if !errors.Is(err, prepareErr) {
 		t.Fatalf("err = %v, want it to wrap %v", err, prepareErr)
+	}
+}
+
+// The work directory is not only for fifos: a backend whose multiplexer has no
+// environment flag has nowhere else to put one out of the argv, so a spec
+// carrying an environment gets a directory even when no stream asked for one.
+func TestPopupLauncher_Exec_envAloneOpensTheWorkspace(t *testing.T) {
+	backend := &shellBackend{}
+	launcher := &PopupLauncher{Backend: backend}
+
+	popup, err := launcher.Exec(
+		t.Context(),
+		PopupSpec{Env: map[string]string{"A": "one"}, Command: []string{"true"}},
+		PopupStreams{},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	dir := backend.launched[0].WorkDir
+	if dir == "" {
+		t.Fatal("a spec carrying an environment must be handed a work directory")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("stat %q = %v, want the directory there for the whole launch", dir, err)
+	}
+
+	if err := popup.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat %q = %v, want the directory given back with the launch", dir, err)
 	}
 }
 

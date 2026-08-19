@@ -1,6 +1,8 @@
 package backend
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -169,7 +171,11 @@ func TestZellij_Launch_ttyHandshake(t *testing.T) {
 		t.Error("zellij announces its tty unguarded; ValidateTTY must stay nil")
 	}
 
-	path, args := b.zellij.RunCommand(b.runRequest(launchSpec(handshake.Spec)))
+	req, err := b.runRequest(launchSpec(handshake.Spec))
+	if err != nil {
+		t.Fatalf("runRequest: %v", err)
+	}
+	path, args := b.zellij.RunCommand(req)
 	assertCommand(t, path, args, "/usr/bin/zellij", []string{
 		"--session=session-id",
 		"run",
@@ -182,6 +188,65 @@ func TestZellij_Launch_ttyHandshake(t *testing.T) {
 		"-c",
 		"echo $(tty) >> /tmp/popup/tty && read done < /tmp/popup/done",
 	})
+}
+
+// The environment is what a "zellij run" argv must not carry: it lands in the
+// launch's work directory instead, and the command line names only the file the
+// payload sources.
+func TestZellij_Launch_envGoesToAWorkDirFile(t *testing.T) {
+	b := zellijBackend(t)
+	dir := t.TempDir()
+
+	req, err := b.runRequest(runinpopup.LaunchSpec{
+		Title:   "editor",
+		Env:     map[string]string{"B": "two", "A": "it's one"},
+		Command: []string{"vim", "my file.txt"},
+		WorkDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("runRequest: %v", err)
+	}
+
+	envFile := filepath.Join(dir, "env")
+	content, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("reading the env file: %v", err)
+	}
+	if want := "export A='it'\\''s one'\nexport B='two'\n"; string(content) != want {
+		t.Errorf("env file =\n\t%q\nwant\n\t%q", content, want)
+	}
+
+	path, args := b.zellij.RunCommand(req)
+	assertCommand(t, path, args, "/usr/bin/zellij", []string{
+		"--session=session-id",
+		"run",
+		"--name=editor",
+		"--floating",
+		"--close-on-exit",
+		"--pinned=true",
+		"--",
+		"/bin/bash",
+		"-c",
+		". '" + envFile + "' && { 'vim' 'my file.txt'\n}",
+	})
+	for _, arg := range args {
+		if strings.Contains(arg, "it's one") {
+			t.Fatalf("args = %#v, want no environment value in them", args)
+		}
+	}
+}
+
+// The file has nowhere to go without the directory, and a launch that carries an
+// environment is given one; running the payload without its environment would
+// be the worse answer.
+func TestZellij_Launch_envNeedsAWorkDir(t *testing.T) {
+	_, err := zellijBackend(t).runRequest(runinpopup.LaunchSpec{
+		Env:     map[string]string{"A": "one"},
+		Command: []string{"true"},
+	})
+	if err == nil {
+		t.Fatal("runRequest must fail: there is nowhere to write the environment")
+	}
 }
 
 // Listed explicitly rather than ranging over Names: tmux-floating-pane is
