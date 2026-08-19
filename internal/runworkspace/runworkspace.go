@@ -1,12 +1,11 @@
 // Package runworkspace settles where one run's scratch directory comes from and
 // where a debug run's log goes.
 //
-// An ordinary run needs no directory of its own: the launch creates the one
-// holding its FIFOs and takes it away afterwards. A debug run is told to look
-// for a log file in that directory and to find both still there when the run is
-// over — and a logger cannot be pointed at a directory that does not exist yet,
-// so such a run creates the directory up front and hands it to the launch as a
-// caller-owned one, which the launch uses and never removes.
+// Every run gets its directory made here, up front: the launch receives it as a
+// caller-owned one and never removes it, so its lifetime has exactly one owner.
+// An ordinary run's directory is taken away again by Close; a debug run is told
+// to look for a log file in that directory and to find both still there when
+// the run is over, so Close keeps it.
 //
 // Every entry point (the pinentry and exec subcommands, and the two deprecated
 // shims) faces that same fork, so it is decided here once instead of in each of
@@ -33,19 +32,19 @@ var openFile = os.OpenFile
 // Workspace is what one run hands to its launch: where the payload's FIFOs go,
 // and the logger the run writes through. Close it when the run ends.
 type Workspace struct {
-	// Options is the launch's workspace configuration — the caller-owned
-	// directory of a debug run, or the prefix naming the one the launch creates
-	// and removes itself.
+	// Options is the launch's workspace configuration: the run's directory,
+	// caller-owned — this package created it and Close settles its fate.
 	Options runinpopup.WorkspaceOptions
 	// Logger is the debug-level logger writing to the log file in a debug run,
 	// and the fallback passed to Open otherwise.
 	Logger *slog.Logger
 
 	logFile *os.File
+	retain  bool
 }
 
-// Open returns the workspace of a run whose directory is named after namePrefix
-// (an os.MkdirTemp prefix).
+// Open creates the run's directory, named after namePrefix (an os.MkdirTemp
+// prefix), and returns the workspace built on it.
 //
 // debug and fallback are parameters rather than something this package derives:
 // the callers disagree on both — the shims OR an environment variable into
@@ -53,15 +52,15 @@ type Workspace struct {
 // PINENTRY_USER_DATA kind and fall back to their context logger — and reading
 // either here would put that policy in the wrong layer.
 func Open(namePrefix string, debug bool, fallback *slog.Logger) (*Workspace, error) {
-	if !debug {
-		return &Workspace{
-			Options: runinpopup.WorkspaceOptions{NamePrefix: namePrefix},
-			Logger:  fallback,
-		}, nil
-	}
 	dir, err := os.MkdirTemp("", namePrefix)
 	if err != nil {
 		return nil, err
+	}
+	if !debug {
+		return &Workspace{
+			Options: runinpopup.WorkspaceOptions{Dir: dir},
+			Logger:  fallback,
+		}, nil
 	}
 	logFile, err := openFile(
 		filepath.Join(dir, logFileName),
@@ -79,19 +78,23 @@ func Open(namePrefix string, debug bool, fallback *slog.Logger) (*Workspace, err
 			slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelDebug}),
 		),
 		logFile: logFile,
+		retain:  true,
 	}, nil
 }
 
-// Close closes the debug log file and reports a failure to do so: what a debug
-// run asked for is that file's contents, and a close that failed means some of
-// them never reached it. The caller decides what such a failure is worth — it
-// says nothing about how the run itself went.
-//
-// The directory stays. It is the other half of what a debug run asked for, and
-// an ordinary run has none of its own to remove.
+// Close settles the directory's fate and reports what failed on the way. An
+// ordinary run's directory is removed with everything the launch left in it; a
+// debug run keeps it — the directory and the log file in it are the two things
+// such a run asked for, and a log close that failed means some of its contents
+// never reached the file. The caller decides what a failure is worth — it says
+// nothing about how the run itself went.
 func (w *Workspace) Close() error {
-	if w.logFile == nil {
-		return nil
+	var errs []error
+	if w.logFile != nil {
+		errs = append(errs, w.logFile.Close())
 	}
-	return w.logFile.Close()
+	if !w.retain {
+		errs = append(errs, os.RemoveAll(w.Options.Dir))
+	}
+	return errors.Join(errs...)
 }

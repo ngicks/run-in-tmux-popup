@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ngicks/run-in-tmux-popup/runinpopup"
 )
 
 func discardLogger() *slog.Logger {
@@ -25,34 +23,36 @@ func tempDir(t *testing.T) string {
 	return dir
 }
 
-func TestOpen_nonDebugLeavesTheDirectoryToTheLaunch(t *testing.T) {
-	tmp := tempDir(t)
+func TestOpen_nonDebugCreatesTheDirectoryAndCloseRemovesIt(t *testing.T) {
+	tempDir(t)
 	fallback := discardLogger()
 
 	w, err := Open("runworkspace-test-", false, fallback)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	want := runinpopup.WorkspaceOptions{NamePrefix: "runworkspace-test-"}
-	if w.Options != want {
-		t.Errorf(
-			"Options = %+v, want %+v: the launch owns an ordinary run's directory",
-			w.Options,
-			want,
-		)
+	dir := w.Options.Dir
+	if dir == "" {
+		t.Fatal("Options.Dir must be set: every run's directory is made here, up front")
+	}
+	if base := filepath.Base(dir); !strings.HasPrefix(base, "runworkspace-test-") {
+		t.Errorf("dir base = %q, want the prefix applied", base)
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		t.Fatalf("Stat(%q) = %v, %v, want the directory to exist before the launch", dir, fi, err)
 	}
 	if w.Logger != fallback {
 		t.Error("Logger must be the fallback when the run is not a debug one")
 	}
-	if entries, err := os.ReadDir(tmp); err != nil || len(entries) != 0 {
-		t.Errorf(
-			"temp dir holds %v (err %v), want nothing created outside a debug run",
-			entries,
-			err,
-		)
+	// Whatever the launch left in it goes with it.
+	if err := os.WriteFile(filepath.Join(dir, "fifo-stand-in"), nil, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
 	if err := w.Close(); err != nil {
-		t.Errorf("Close = %v, want nil: nothing was opened", err)
+		t.Errorf("Close = %v, want nil", err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Stat(%q) after Close = %v, want an ordinary run's directory removed", dir, err)
 	}
 }
 

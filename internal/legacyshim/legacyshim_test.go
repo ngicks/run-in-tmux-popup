@@ -152,16 +152,16 @@ func TestShim_Run_reportsWhatTheBackendAndTheExchangeReport(t *testing.T) {
 	}
 }
 
-func TestShim_Run_ordinaryRunLeavesTheDirectoryToTheLaunch(t *testing.T) {
+func TestShim_Run_ordinaryRunGetsARemovedDirectory(t *testing.T) {
 	args := []string{"--display", ":0"}
 	r := runShim(t, invocation{userData: validUserData, args: args})
 
 	if r.err != nil || !r.called {
 		t.Fatalf("Run = %v, exchange ran: %t, want the exchange to have run", r.err, r.called)
 	}
-	want := runinpopup.WorkspaceOptions{NamePrefix: "legacyshim-test-"}
-	if got := r.launcher.Popup.Workspace; got != want {
-		t.Errorf("Workspace = %+v, want %+v: the launch owns the directory", got, want)
+	got := r.launcher.Popup.Workspace
+	if got.Dir == "" || !strings.HasPrefix(filepath.Base(got.Dir), "legacyshim-test-") {
+		t.Errorf("Workspace = %+v, want a created directory named by the prefix", got)
 	}
 	if _, ok := r.launcher.Popup.Backend.(fakeBackend); !ok {
 		t.Errorf("Backend = %v, want the one the shim builds", r.launcher.Popup.Backend)
@@ -170,7 +170,11 @@ func TestShim_Run_ordinaryRunLeavesTheDirectoryToTheLaunch(t *testing.T) {
 		t.Errorf("PinentryArgs = %q, want %q passed through", r.launcher.PinentryArgs, args)
 	}
 	if entries, err := os.ReadDir(r.tempDir); err != nil || len(entries) != 0 {
-		t.Errorf("temp dir holds %v (err %v), want nothing created up front", entries, err)
+		t.Errorf(
+			"temp dir holds %v (err %v), want an ordinary run's directory removed again",
+			entries,
+			err,
+		)
 	}
 	// The log goes to stderr, where it has always gone: stdout is the Assuan
 	// channel and cannot take a byte of it.
