@@ -40,7 +40,7 @@ const execWorkspacePrefix = "run-in-popup-exec-"
 
 const execExample = `  run-in-popup exec -- make test
   run-in-popup exec --title build -- go build ./...
-  run-in-popup exec --backend tmux-floating-pane -- git rebase -i main`
+  file=$(run-in-popup exec --backend tmux-floating-pane -- fzf)`
 
 func execCmd(parent *cobra.Command, flagConfig *string) {
 	var (

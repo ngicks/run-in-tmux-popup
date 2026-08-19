@@ -19,7 +19,7 @@ machinery).
       outcome — plain `Wait` would fail on tmux display-popup's
       status-carrying launcher, violating "exit code is the exchange's
       status" (see PLAN.md delta).
-- [ ] Step 2 — docs and help ("README/help carry no payload/JSON-result
+- [x] Step 2 — docs and help ("README/help carry no payload/JSON-result
       references"; contract stated in README Library section)
 - [ ] Verification — grep gate empty; bridge tests (byte delivery,
       dismissal, launch failure, rendezvous timeout); full suite +

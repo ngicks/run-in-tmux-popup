@@ -6,7 +6,7 @@ The current entrypoint is **`run-in-popup`**. Its `pinentry` subcommand proxies
 the Assuan exchange gpg-agent runs over stdin/stdout to a `pinentry-curses`
 drawing in a tmux `display-popup`, a tmux floating pane or a zellij floating
 pane. Its [`exec`](#run-in-popup-exec) subcommand runs any command in such a
-popup and hands the result back to the caller as JSON.
+popup and relays what it writes back to the terminal that called it.
 
 The older `tmux-popup-pinentry-curses` / `zellij-popup-pinentry-curses`
 binaries still work but are [deprecated](#deprecated-legacy-binaries).
@@ -262,32 +262,35 @@ Flags:
       --title string     popup title (default: the backend's own; tmux-floating-pane has no title flag and ignores it)
 ```
 
-It opens a popup, runs the command in it — drawn there live, with the popup's
-terminal as its stdin, so it may prompt — and once the command exits prints a
-single compact JSON object on **its own** stdout, back in the shell that called
-it:
+It opens a popup, lets it run the command, and bridges the command's streams
+back to the shell that called it. stdin is the popup's terminal, so the command
+may prompt there; everything it writes to stdout and stderr is relayed
+to `exec`'s **own** stdout and stderr as it arrives — unaltered, and each stream
+on its own:
 
 ```
-$ run-in-popup exec -- sh -c 'echo built; exit 2'
-{"command":["sh","-c","echo built; exit 2"],"exit_code":2,"stdout":"built\n","stderr":""}
+$ run-in-popup exec -- make test
 ```
 
-| key                  | meaning                                                                        |
-| -------------------- | ------------------------------------------------------------------------------ |
-| `command`            | the argv that was run                                                          |
-| `exit_code`          | the command's status, `-1` when it never started or was killed by a signal     |
-| `stdout` / `stderr`  | everything the command wrote, captured whole                                   |
-| `error`              | present only when there is no status to report — see below                     |
-
-`error` appears when the command never started, or when its output could not be
-relayed; `exit_code` is then `-1` rather than anything the command chose.
-
-`run-in-popup exec` itself **exits 0 whenever the exchange worked**. A command
-that fails is not a failure of the transport: its status is `exit_code`, and the
-caller reads it out of the JSON.
+The command's output therefore ends up where the caller is, not in the popup,
+which is what makes a command that wants a terminal of its own useful here. A
+picker that draws its interface on the terminal itself and prints the selection
+on stdout puts its list in the popup and the chosen line straight into the
+caller's shell:
 
 ```
-$ run-in-popup exec -- make test | jq -r .exit_code
+$ file=$(run-in-popup exec -- fzf)
+```
+
+`run-in-popup exec` **exits 0 once the bridge is over** — the popup opened and
+both streams ended — and **1** when the popup could not be opened, never reached
+the command, or a stream could not be relayed. The command's own status is not
+passed on: only some popup mechanisms carry it back at all, so reporting it
+would mean a different answer per backend. A caller that needs it has to have
+the command report it in what it writes:
+
+```
+$ run-in-popup exec -- sh -c 'make test; echo "exit=$?"'
 ```
 
 Everything after `--` is the command and is passed through untouched; without a
@@ -297,23 +300,21 @@ The backend is chosen exactly as it is for `pinentry` — see
 
 A few things worth knowing:
 
-- The command's stdout and stderr are teed — live to the popup, captured for the
-  result — so they are pipes rather than the popup's tty. Programs that gate
-  color or progress rendering on `isatty` therefore render plainly. stdin *is*
-  the tty, so prompting still works.
+- Both output streams are redirected into the bridge, so they are pipes rather
+  than the popup's tty and nothing the command prints appears in the popup —
+  what shows there is only what the command draws on the terminal itself.
+  Programs that gate color or progress rendering on `isatty` therefore render
+  plainly. stdin *is* the tty, so prompting still works.
 - `timeouts.overall` does **not** apply here. It sizes a pinentry prompt, and any
   bound tight enough for that would kill the long builds this exists to run.
   Only the popup's *startup* is on a clock — 30 s for it to get as far as running
-  the command — after which the command runs for as long as it likes, and only
-  your own Ctrl-C ends the wait.
-- A popup that dies mid-command is reported, not waited on: `exec` fails with
-  `the popup payload exited without reporting a result` rather than hanging.
+  the command and opening its end of each stream — after which the command runs
+  for as long as it likes, and only your own Ctrl-C ends the wait.
+- A popup dismissed mid-command is not waited on: it takes the command with it,
+  which ends both streams, so `exec` returns with whatever had already arrived
+  rather than hanging.
 - `--title` is dropped by `tmux-floating-pane`: `new-pane` has no title flag. It
   reaches `tmux-popup` (as `-T`) and `zellij` (as `--name`).
-
-The popup runs this same binary again, as a hidden `exec-payload` subcommand
-whose stdout is the FIFO the result travels back through. It is an
-implementation detail — never invoke it by hand.
 
 ## Deprecated: legacy binaries
 
@@ -417,7 +418,9 @@ return popup.Wait()
 nil leaves it on the popup's terminal, where the user sees it and can type at it,
 and a non-nil endpoint gets a FIFO relayed to it. `StdoutPipe`/`StderrPipe` ask
 for a reader instead, handed back by `PopupCommand.StdoutPipe` / `StderrPipe` —
-os/exec style, so read them to EOF before `Wait`.
+os/exec style, so read them to EOF before `Wait`. `run-in-popup exec` is this
+layer used directly: the user's command as the spec, the process's own stdout
+and stderr as the two endpoints, and nothing layered on top.
 
 The two exchanges layer a protocol on that. `PinentryLauncher.Call(ctx)` is the
 pinentry proxy; it needs a `PopupLauncher` whose `Backend` also implements
@@ -428,8 +431,7 @@ payload's stdout — drain it, the payload blocks on its own stdout otherwise �
 whose `Wait` reports how the exchange ended. Input travels one of two ways: the
 launcher's `AddPayload` marshals the launch-time value into the popup's command
 line, or, without one, the payload's stdin becomes a FIFO and `Send` carries the
-values. `run-in-popup exec` is a `JsonIpcLauncher[[]string, ExecResult]` whose
-popup side is `ExecPayload`.
+values.
 
 A `Backend` itself is small: `Name`, `Launch` and `Prepare`. `Prepare` is where a
 backend fixes up multiplexer state a popup would otherwise break — the tmux
@@ -446,6 +448,15 @@ the payload is done has the payload tell it, as both exchanges do over their own
 FIFOs. The restore can therefore land on a live floating pane, which tmux answers
 by pulling that pane out of its float and into the layout — not by crashing. That
 is the guarantee this relies on; it is not an ordering guarantee.
+
+`PopupCommand.WaitStreams` waits the same way but lets those streams say how the
+launch went: every one of them running to its end is a success, however the
+launcher then exited. That is what a caller relaying a payload's output wants,
+since `tmux display-popup`'s launcher carries the payload's exit status — `Wait`
+would call a payload that exited non-zero a failed launch, while the
+floating-pane mechanisms, whose launcher is long gone by then, would call the
+same run a success. A launcher failure is still reported when a stream failed
+too: a popup that died is why the stream ended, and explains it better.
 
 ### But why?
 
