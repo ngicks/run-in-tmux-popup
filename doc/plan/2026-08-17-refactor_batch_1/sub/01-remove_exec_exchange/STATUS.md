@@ -11,10 +11,14 @@ machinery).
 
 ## Checklist
 
-- [ ] Step 1 — rewire exec onto `PopupLauncher` + delete payload
+- [x] Step 1 — rewire exec onto `PopupLauncher` + delete payload
       machinery ("wrapper deleted; popup runs the command directly";
       "stdout/stderr connected to the caller"; `ExecResult` JSON
-      deleted; JsonIpc contract stated)
+      deleted; JsonIpc contract stated). Added
+      `PopupCommand.WaitStreams()` so the streams decide the bridge's
+      outcome — plain `Wait` would fail on tmux display-popup's
+      status-carrying launcher, violating "exit code is the exchange's
+      status" (see PLAN.md delta).
 - [ ] Step 2 — docs and help ("README/help carry no payload/JSON-result
       references"; contract stated in README Library section)
 - [ ] Verification — grep gate empty; bridge tests (byte delivery,

@@ -55,7 +55,6 @@ func rootCmd() *cobra.Command {
 	configCmd(cmd, &flagConfig)
 	pinentryCmd(cmd, &flagConfig)
 	execCmd(cmd, &flagConfig)
-	execPayloadCmd(cmd)
 
 	return cmd
 }

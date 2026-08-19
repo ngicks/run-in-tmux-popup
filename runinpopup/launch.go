@@ -273,13 +273,12 @@ type PopupCommand struct {
 //
 // The launcher exiting is not the payload finishing — the floating-pane
 // mechanisms return as soon as the pane exists — so a caller that needs to know
-// when the payload itself is done has to arrange for the payload to tell it, as
-// the exec and pinentry exchanges do over their own FIFOs.
+// when the payload itself is done has to arrange for the payload to tell it, the
+// way the pinentry handshake does over its own FIFOs.
 //
 // A launcher that failed before the popup ever reached the payload leaves the
-// wait for an allocated stream to the launcher's startup bound; it is the
-// exchange above, which knows what the payload owes it, that can end such a wait
-// earlier.
+// wait for an allocated stream to the launcher's startup bound; it is the caller
+// above, which knows what the payload owes it, that can end such a wait earlier.
 func (c *PopupCommand) Wait() error {
 	err := c.waitLauncher()
 	if perr := c.endpoints.Wait(); err == nil {
@@ -287,6 +286,27 @@ func (c *PopupCommand) Wait() error {
 	}
 	c.release()
 	return err
+}
+
+// WaitStreams waits like Wait, but lets the payload's streams say how the launch
+// went: it reports nothing when every stream relayed into a caller-supplied
+// endpoint ran to its end, however the launcher then exited.
+//
+// That is the difference, and it is what a caller relaying a payload's output
+// wants. tmux display-popup's launcher carries the payload's exit status, so
+// Wait would turn a payload that exited non-zero into a failed launch, while the
+// floating-pane mechanisms — whose launcher is long gone by then — would call
+// the same run a success. The launcher's failure is still reported when a stream
+// failed too: a popup that died is why the stream ended, and explains it better
+// than the stream can.
+func (c *PopupCommand) WaitStreams() error {
+	streamErr := c.endpoints.Wait()
+	launcherErr := c.waitLauncher()
+	c.release()
+	if streamErr == nil {
+		return nil
+	}
+	return cmp.Or(launcherErr, streamErr)
 }
 
 // StdoutPipe returns the reader allocated when PopupStreams.StdoutPipe was set,

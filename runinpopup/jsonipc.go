@@ -23,14 +23,19 @@ const jsonIpcLauncherGrace = 2 * time.Second
 // JsonIpcLauncher opens a popup whose payload speaks JSON: In values reach it,
 // Out values come back.
 //
+// The contract the payload has to keep is the whole of it: whatever command
+// PartialSpec and AddPayload name writes JSON-encoded Out values to its stdout,
+// and that stdout — allocated a FIFO of its own and decoded into Out values as
+// they arrive — is the exchange. No process stands between it and this one, the
+// popup runs that command itself, so anything else it prints there is a decoding
+// failure; what it has to say to the user goes on its stderr, which stays on the
+// popup's terminal.
+//
 // Input travels one of two ways. Launch-time input is marshaled into the popup's
 // command line by AddPayload, and the payload's stdin stays on the popup's
 // terminal, where the user can type at it. Streamed input needs no AddPayload:
 // without one a stdin FIFO is allocated instead, and the values handed to
 // JsonIpcConn.Send travel over it as JSON lines.
-//
-// Output is always the payload's stdout, allocated a FIFO of its own and decoded
-// into Out values as they arrive.
 //
 // A launcher is one-shot in the exec.Cmd sense: fill the fields in, call Exec
 // once.

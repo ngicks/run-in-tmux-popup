@@ -29,32 +29,9 @@ func main() {
 	if err == nil {
 		return
 	}
-	code, report := exitStatus(err)
-	if report {
-		fmt.Fprintln(os.Stderr, "error:", err)
-	}
-	os.Exit(code)
-}
-
-// exitStatus decides how the process ends for err: the status to exit with, and
-// whether the error is worth a line on stderr.
-//
-// A leaf may ask for a status of its own — the exec payload has to exit the way
-// the command it ran did, or the multiplexer reports the wrong thing. A bare
-// request carries no message, since that command already had its say on the
-// popup terminal; one wrapping an error still gets printed before we go.
-func exitStatus(err error) (code int, report bool) {
-	if coded, ok := errors.AsType[exitCoder](err); ok {
-		return coded.ExitCode(), coded.Unwrap() != nil
-	}
-	return 1, true
-}
-
-// exitCoder is an error asking for a particular exit status. Declared here, at
-// the consumer, so the commands package can keep the implementing type
-// unexported.
-type exitCoder interface {
-	error
-	ExitCode() int
-	Unwrap() error
+	// Every failure ends the same way: cobra silences what a leaf returns, so
+	// this is where it is said, and no command asks for a status of its own —
+	// what runs inside a popup keeps its status to itself.
+	fmt.Fprintln(os.Stderr, "error:", err)
+	os.Exit(1)
 }

@@ -78,7 +78,15 @@ out of scope ("Delete now, maybe re-add later").
 // run-in-popup exec [flags] -- command [arg...]
 //     runs command in the popup (stdin = popup TTY) and streams its
 //     stdout/stderr to exec's own stdout/stderr, live.
-//     Exit code: see open question 2.
+//     Exit code: 0 when the bridge worked, 1 on launch/exchange
+//     failure; the inner command's status is not reported.
+
+// ---- added during step 1 (implementation-forced) ----
+// PopupCommand.WaitStreams() error — waits like Wait but lets the
+// endpoint streams decide the outcome; the launcher's exit is reported
+// only when a stream also failed. Needed because tmux display-popup's
+// launcher carries the payload's exit status, so plain Wait would fail
+// the bridge on a non-zero inner command on that one backend.
 ```
 
 ## Implementation steps

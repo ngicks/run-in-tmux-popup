@@ -1,7 +1,14 @@
 package commands
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"os/exec"
 	"slices"
+	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -9,6 +16,252 @@ import (
 
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
 )
+
+// popupShell stands in for a multiplexer: it "opens a popup" by running the
+// command line the launch built in a local shell, which is all a backend has to
+// do for the bridge to run end to end.
+type popupShell struct {
+	// launchErr fails the launch the way a multiplexer that could not open a
+	// popup does.
+	launchErr error
+	// empty opens a popup that never runs the command line it was handed, the way
+	// one that dies on the way to it does.
+	empty bool
+}
+
+func (b *popupShell) Name() string { return "shell" }
+
+func (b *popupShell) Prepare(context.Context) (func(context.Context) error, error) {
+	return nil, nil
+}
+
+func (b *popupShell) Launch(
+	ctx context.Context,
+	spec runinpopup.LaunchSpec,
+) (runinpopup.PopupHandle, error) {
+	if b.launchErr != nil {
+		return nil, b.launchErr
+	}
+	// The bridge names both output streams, so what it hands over is always a
+	// shell command line with the redirections already in it.
+	script := spec.Script
+	if b.empty {
+		script = "true"
+	}
+	cmd := exec.CommandContext(ctx, "sh", "-c", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A dismissed popup takes everything running inside it along; killing the
+	// shell alone would leave the command it started holding the streams open.
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return popupShellHandle{cmd}, nil
+}
+
+type popupShellHandle struct{ cmd *exec.Cmd }
+
+func (h popupShellHandle) Wait() error { return h.cmd.Wait() }
+
+// popupOutput stands in for one of this process's own output streams: it takes
+// what the popup writes, remembers having been closed, and says when the first
+// byte arrived so a test can act while the command is still running.
+type popupOutput struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	closed  bool
+	started chan struct{}
+	begin   func()
+}
+
+func newPopupOutput() *popupOutput {
+	started := make(chan struct{})
+	return &popupOutput{started: started, begin: sync.OnceFunc(func() { close(started) })}
+}
+
+func (o *popupOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.begin()
+	return o.buf.Write(p)
+}
+
+func (o *popupOutput) Close() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.closed = true
+	return nil
+}
+
+func (o *popupOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.String()
+}
+
+func (o *popupOutput) wasClosed() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.closed
+}
+
+func popupLauncher(backend runinpopup.Backend) *runinpopup.PopupLauncher {
+	return &runinpopup.PopupLauncher{Backend: backend}
+}
+
+func shellSpec(script string) runinpopup.PopupSpec {
+	return runinpopup.PopupSpec{Command: []string{"sh", "-c", script}}
+}
+
+// Each stream arrives whole, in its own order, and the command's own exit status
+// is none of the bridge's business: it says nothing about whether the two
+// streams got here.
+func TestExecBridge_relaysBothStreams(t *testing.T) {
+	stdout, stderr := newPopupOutput(), newPopupOutput()
+
+	err := execBridge(
+		t.Context(),
+		popupLauncher(&popupShell{}),
+		shellSpec(`printf 'out one\n'
+printf 'err one\n' >&2
+printf 'out two\n'
+printf 'err two\n' >&2
+exit 3`),
+		stdout, stderr,
+	)
+	if err != nil {
+		t.Fatalf("execBridge: %v", err)
+	}
+	if got, want := stdout.String(), "out one\nout two\n"; got != want {
+		t.Errorf("stdout = %q, want %q", got, want)
+	}
+	if got, want := stderr.String(), "err one\nerr two\n"; got != want {
+		t.Errorf("stderr = %q, want %q", got, want)
+	}
+	if !stdout.wasClosed() || !stderr.wasClosed() {
+		t.Error("the launch owns the endpoints it was handed and must close them")
+	}
+}
+
+// Nothing collects the output on the way through, so nothing bounds how much of
+// it there may be.
+func TestExecBridge_outputOutgrowsAPipeBuffer(t *testing.T) {
+	stdout := newPopupOutput()
+
+	err := execBridge(
+		t.Context(),
+		popupLauncher(&popupShell{}),
+		shellSpec("seq 1 40000"),
+		stdout, newPopupOutput(),
+	)
+	if err != nil {
+		t.Fatalf("execBridge: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) != 40000 || lines[39999] != "40000" {
+		t.Errorf("got %d lines ending %q, want 40000 ending \"40000\"",
+			len(lines), lines[len(lines)-1])
+	}
+	if len(stdout.String()) <= 64*1024 {
+		t.Errorf("stdout is %d bytes, too small to prove the relay is unbounded",
+			len(stdout.String()))
+	}
+}
+
+// The streams the bridge hands over are this process's own stdout and stderr,
+// which it was handed by whoever ran it: the launch closing them at the end of
+// the relay must reach no further than the wrapper.
+func TestExecBridge_leavesTheProcessStreamsOpen(t *testing.T) {
+	stdout := newPopupOutput()
+
+	err := execBridge(
+		t.Context(),
+		popupLauncher(&popupShell{}),
+		shellSpec("printf 'from the popup'"),
+		unclosableWriter{stdout}, newPopupOutput(),
+	)
+	if err != nil {
+		t.Fatalf("execBridge: %v", err)
+	}
+	if stdout.wasClosed() {
+		t.Error("the stream behind the wrapper was closed")
+	}
+	if _, err := stdout.Write([]byte(" and after it")); err != nil {
+		t.Fatalf("writing after the bridge: %v", err)
+	}
+	if got, want := stdout.String(), "from the popup and after it"; got != want {
+		t.Errorf("stdout = %q, want %q", got, want)
+	}
+}
+
+// The user closes the popup while the command is still running: the multiplexer
+// takes down everything in it, which ends the streams, and the bridge returns
+// with what had already arrived rather than waiting on a command that is gone.
+func TestExecBridge_popupDismissedWhileTheCommandRuns(t *testing.T) {
+	ctx, dismiss := context.WithCancel(t.Context())
+	defer dismiss()
+
+	stdout := newPopupOutput()
+	done := make(chan error, 1)
+	go func() {
+		done <- execBridge(
+			ctx,
+			popupLauncher(&popupShell{}),
+			shellSpec("printf started; sleep 30"),
+			stdout, newPopupOutput(),
+		)
+	}()
+
+	<-stdout.started
+	dismiss()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the bridge did not return after the popup was dismissed")
+	}
+	if got, want := stdout.String(), "started"; got != want {
+		t.Errorf("stdout = %q, want %q: what arrived before the dismissal is still owed",
+			got, want)
+	}
+}
+
+func TestExecBridge_popupThatCannotBeOpened(t *testing.T) {
+	launchErr := errors.New("no pane could be opened")
+
+	err := execBridge(
+		t.Context(),
+		popupLauncher(&popupShell{launchErr: launchErr}),
+		shellSpec("true"),
+		newPopupOutput(), newPopupOutput(),
+	)
+	if !errors.Is(err, launchErr) || !strings.Contains(err.Error(), "popup failed") {
+		t.Fatalf("execBridge = %v, want a popup failure wrapping %v", err, launchErr)
+	}
+}
+
+// A popup that never runs the command opens neither stream, and only the bound
+// on that rendezvous can end the wait.
+func TestExecBridge_popupThatNeverRunsTheCommand(t *testing.T) {
+	launcher := popupLauncher(&popupShell{empty: true})
+	launcher.StartupTimeout = 200 * time.Millisecond
+
+	start := time.Now()
+	err := execBridge(
+		t.Context(),
+		launcher,
+		shellSpec("true"),
+		newPopupOutput(), newPopupOutput(),
+	)
+	elapsed := time.Since(start)
+
+	if err == nil || !strings.Contains(err.Error(), "did not reach its payload") {
+		t.Fatalf("execBridge = %v, want the rendezvous bound to end the wait", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("the bridge took %v to give up", elapsed)
+	}
+}
 
 // parseExecFlags mirrors what execCmd builds — the two flags bound to locals —
 // and parses argv into them, so Changed and ArgsLenAtDash reflect a real
@@ -139,48 +392,18 @@ func TestExecFlagOverrides(t *testing.T) {
 	}
 }
 
-// The two halves have to give up at the same time, so a caller that chose its
-// own bound has to get it across — and the only channel it has is the argv the
-// popup runs.
-func TestExecPayloadArgv(t *testing.T) {
-	command := []string{"make", "test"}
-	payload := "/bin/run-in-popup"
-
-	def := execPayloadArgv(payload, 0, command)
-	want := []string{payload, runinpopup.ExecPayloadCommandName, "--", "make", "test"}
-	if !slices.Equal(def, want) {
-		t.Errorf("argv = %q, want %q: the default bound needs no flag", def, want)
-	}
-
-	custom := execPayloadArgv(payload, 5*time.Second, command)
-	want = []string{
-		payload, runinpopup.ExecPayloadCommandName,
-		"--" + runinpopup.ExecPayloadStartupTimeoutFlag + "=5s",
-		"--", "make", "test",
-	}
-	if !slices.Equal(custom, want) {
-		t.Errorf("argv = %q, want %q", custom, want)
-	}
-}
-
-// The exec leaves must be reachable and the payload one must stay out of help
-// output: exec builds its popup argv around the payload's name.
-func TestExecCommandsAreWired(t *testing.T) {
+// exec runs the user's command in the popup itself, so nothing internal stands
+// behind it: every leaf the root carries is one a user is meant to type.
+func TestExecCommandIsWired(t *testing.T) {
 	root := rootCmd()
 
-	for _, tc := range []struct {
-		name       string
-		wantHidden bool
-	}{
-		{name: "exec"},
-		{name: runinpopup.ExecPayloadCommandName, wantHidden: true},
-	} {
-		cmd, _, err := root.Find([]string{tc.name})
-		if err != nil || cmd.Name() != tc.name {
-			t.Fatalf("Find(%q) = %v, %v; want the leaf itself", tc.name, cmd.Name(), err)
-		}
-		if cmd.Hidden != tc.wantHidden {
-			t.Errorf("%s Hidden = %v, want %v", tc.name, cmd.Hidden, tc.wantHidden)
+	cmd, _, err := root.Find([]string{"exec"})
+	if err != nil || cmd.Name() != "exec" {
+		t.Fatalf("Find(exec) = %v, %v; want the leaf itself", cmd.Name(), err)
+	}
+	for _, c := range root.Commands() {
+		if c.Hidden {
+			t.Errorf("%s is hidden, so it is a leaf nobody can be told about", c.Name())
 		}
 	}
 }

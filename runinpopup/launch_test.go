@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/shellargv"
 )
@@ -64,13 +65,13 @@ type shellHandle struct{ cmd *exec.Cmd }
 
 func (h shellHandle) Wait() error { return h.cmd.Wait() }
 
-// stalledBackend opens a popup that never reaches its payload: its launcher runs
-// and stays, but the command line wiring the payload's streams is never run, so
-// nothing opens their other end.
-type stalledBackend struct{ *shellBackend }
+// emptyPopupBackend opens a popup that never reaches its payload: its launcher
+// does its part and exits, but the command line wiring the payload's streams is
+// never run, so nothing opens their other end.
+type emptyPopupBackend struct{ *shellBackend }
 
-func (b *stalledBackend) Launch(ctx context.Context, spec LaunchSpec) (PopupHandle, error) {
-	spec.Command, spec.Script = nil, "sleep 5"
+func (b *emptyPopupBackend) Launch(ctx context.Context, spec LaunchSpec) (PopupHandle, error) {
+	spec.Command, spec.Script = nil, "true"
 	return b.shellBackend.Launch(ctx, spec)
 }
 
@@ -332,6 +333,106 @@ func TestPopupLauncher_Exec_popupFailure(t *testing.T) {
 	}
 	if backend.restored != 1 {
 		t.Errorf("restored = %d, want the state restored even on failure", backend.restored)
+	}
+}
+
+// The shell fake exits with its payload's status, exactly as tmux
+// display-popup's launcher does, so a command that failed inside the popup must
+// not come back as a failed launch — the streams it wrote ran to their end.
+func TestPopupCommand_WaitStreams_streamsDecide(t *testing.T) {
+	out, errOut := new(popupOutput), new(popupOutput)
+	launcher := &PopupLauncher{Backend: &shellBackend{}}
+
+	popup, err := launcher.Exec(
+		t.Context(),
+		PopupSpec{Script: `printf out; printf err >&2; exit 3`},
+		PopupStreams{Stdout: out, Stderr: errOut},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := popup.WaitStreams(); err != nil {
+		t.Fatalf("WaitStreams: %v", err)
+	}
+	if out.String() != "out" || errOut.String() != "err" {
+		t.Errorf("stdout = %q, stderr = %q; want %q and %q",
+			out.String(), errOut.String(), "out", "err")
+	}
+	// Wait is the other half of the contrast: there the launcher's exit is the
+	// launch's own verdict.
+	if err := popup.Wait(); err == nil || !strings.Contains(err.Error(), "popup failed") {
+		t.Errorf("Wait = %v, want the launcher's status reported there", err)
+	}
+}
+
+// A popup that never appears leaves its streams waiting for a payload that will
+// never open them, and the launcher is the only one that knows why.
+func TestPopupCommand_WaitStreams_launcherExplainsABrokenStream(t *testing.T) {
+	launchErr := errors.New("no pane could be opened")
+	launcher := &PopupLauncher{
+		Backend: &failingLauncherBackend{
+			shellBackend: &shellBackend{},
+			err:          launchErr,
+		},
+		StartupTimeout: 200 * time.Millisecond,
+	}
+
+	popup, err := launcher.Exec(
+		t.Context(),
+		PopupSpec{Script: "true"},
+		PopupStreams{Stdout: new(popupOutput)},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := popup.WaitStreams(); !errors.Is(err, launchErr) {
+		t.Fatalf("WaitStreams = %v, want it to wrap %v", err, launchErr)
+	}
+}
+
+// A launcher that did its part says nothing about a popup that never ran the
+// command line, so the rendezvous bound is what ends the wait and what is
+// reported.
+func TestPopupCommand_WaitStreams_rendezvousTimeout(t *testing.T) {
+	launcher := &PopupLauncher{
+		Backend:        &emptyPopupBackend{shellBackend: &shellBackend{}},
+		StartupTimeout: 200 * time.Millisecond,
+	}
+
+	popup, err := launcher.Exec(
+		t.Context(),
+		PopupSpec{Script: "true"},
+		PopupStreams{Stdout: new(popupOutput)},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	err = popup.WaitStreams()
+	if err == nil || !strings.Contains(err.Error(), "did not reach its payload") {
+		t.Fatalf("WaitStreams = %v, want the rendezvous bound to end the wait", err)
+	}
+}
+
+// The launcher of a floating-pane mechanism is gone while the payload is still
+// writing, so the streams — not it — are what the wait is for.
+func TestPopupCommand_WaitStreams_launcherExitsWhileThePayloadRuns(t *testing.T) {
+	out := new(popupOutput)
+	launcher := &PopupLauncher{Backend: &detachedBackend{shellBackend: &shellBackend{}}}
+
+	popup, err := launcher.Exec(
+		t.Context(),
+		PopupSpec{Script: `sleep 0.2; printf late`},
+		PopupStreams{Stdout: out},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := popup.WaitStreams(); err != nil {
+		t.Fatalf("WaitStreams: %v", err)
+	}
+	if out.String() != "late" {
+		t.Errorf("popup output = %q, want %q: the wait ended before the payload did",
+			out.String(), "late")
 	}
 }
 
