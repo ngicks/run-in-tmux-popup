@@ -66,3 +66,14 @@ mode-0700 workspace, so filesystem permissions already decide who can
 speak on them; the secrets re-checked the same boundary. Both tmux
 backends now announce the tty as-is (ValidateTTY nil), matching zellij,
 whose "guard would be theater" contrast comment is retired with it.
+
+## Exit code is the exchange's status (user via "Continue", 2026-08-19)
+
+`run-in-popup exec` exits 0 when the bridge worked and 1 on
+launch/exchange failure; the inner command's exit status is not
+reported. Adopted as the recommended default when the user answered
+"Continue" to the gate summary presenting it. Rationale: with the
+payload wrapper gone, only tmux display-popup's launcher even carries
+the inner status (floating-pane/zellij launchers return early), so
+forwarding it would behave differently per backend. Rejected:
+forwarding the status where the backend happens to provide it.

@@ -1,6 +1,6 @@
 # STATUS — exec becomes a plain stream bridge
 
-State: **planned (idea gate pending)** — scaffolded 2026-08-19; the
+State: **in progress** — scaffolded 2026-08-19; the
 initial "delete exec entirely" direction was retracted by the user at
 the first gate round and replaced by the stream-bridge shape (see
 DECISION.md "Exec stays as a stream bridge"). Plan rewritten

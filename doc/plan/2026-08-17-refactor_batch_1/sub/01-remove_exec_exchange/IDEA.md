@@ -1,6 +1,8 @@
 # IDEA — exec becomes a plain stream bridge
 
-Gate: not confirmed
+Gate: confirmed by user, 2026-08-19 — "Continue" given in direct
+response to the gate summary (bridge shape as drafted; exit code =
+exchange status only).
 
 ## How it should be
 

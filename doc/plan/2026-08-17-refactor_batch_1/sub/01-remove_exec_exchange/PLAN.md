@@ -128,15 +128,12 @@ After each step: `go test ./...`, `go vet ./...`,
 
 ## Open questions
 
-1. *(idea gate)* Confirm IDEA.md: exec = live stdout/stderr bridge,
-   stdin stays on the popup TTY, no JSON, wrapper deleted.
-2. Exit code of `run-in-popup exec`: the wrapper that smuggled the
-   inner command's status out is gone, and only tmux display-popup's
-   launcher carries the payload status (floating-pane/zellij launchers
-   exit early). Options: (a) exchange-status only — 0 when the bridge
-   worked, 1 on launch/exchange failure, inner status not reported
-   (consistent across backends; default); (b) forward the status where
-   the backend provides it (inconsistent across backends).
+None. The idea gate passed 2026-08-19 (bridge shape as drafted), and
+the exit-code question resolved to exchange-status only: `exec` exits
+0 when the bridge worked, 1 on launch/exchange failure; the inner
+command's status is not reported (consistent across all backends —
+only tmux display-popup's launcher even carries it). Recorded in
+DECISION.md "Exit code is the exchange's status".
 
 ## Decision → step traceability
 
