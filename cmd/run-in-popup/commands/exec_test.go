@@ -217,6 +217,10 @@ func TestExecBridge_popupDismissedWhileTheCommandRuns(t *testing.T) {
 
 	select {
 	case <-done:
+		// The verdict is deliberately not asserted: the dismissal is modeled by
+		// cancellation, and the FIFOs EOFing races the cancellation cause — a nil
+		// (normal end) and a failed-relay error are both faithful ends here. The
+		// prompt return and the delivered bytes are what the bridge owes either way.
 	case <-time.After(10 * time.Second):
 		t.Fatal("the bridge did not return after the popup was dismissed")
 	}

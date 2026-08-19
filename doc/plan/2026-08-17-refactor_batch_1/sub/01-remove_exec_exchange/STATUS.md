@@ -1,13 +1,22 @@
 # STATUS — exec becomes a plain stream bridge
 
-State: **in progress** — scaffolded 2026-08-19; the initial "delete
-exec entirely" direction was retracted by the user at the first gate
-round and replaced by the stream-bridge shape (see DECISION.md "Exec
-stays as a stream bridge"). Gate confirmed and the exit-code question
-resolved (exchange status only) 2026-08-19.
+State: **done** — both steps landed 2026-08-19/20 and the verification
+gate passed: full suite (`-race -count=2 ./...` included), hermeticity
+stubs, both vet tag sets, lint, and all grep gates green; multi-focus
+review verdict approve-with-nits with no blocking defects, and its four
+minors (stale handshake-hardening prose, `WaitStreams` doc on
+stream-less launches, the dismissal test's racy verdict documented,
+this STATUS header) fixed in the closing commit. The same session also
+landed four orthogonal user decisions recorded in DECISION.md:
+`runworkspace.Open` always creates the run directory, the tmux
+tty-handshake guard secrets are removed, `Config.DefaultBackend` is
+renamed `Config.Backend` (schema break), and zellij popup env travels
+via a sourced 0600 env file in the workspace instead of the argv.
 
-Next action: step 1 (rewire exec onto PopupLauncher, delete payload
-machinery).
+No next action — the sub-plan is complete. Known open follow-up
+elsewhere: the parent plan's follow-up list (parent STATUS.md), plus
+exec's Ctrl-C error identity being racy (nil vs "popup failed:
+signal: killed"), noted in the closing review as acceptable.
 
 ## Checklist
 
@@ -21,7 +30,7 @@ machinery).
       status" (see PLAN.md delta).
 - [x] Step 2 — docs and help ("README/help carry no payload/JSON-result
       references"; contract stated in README Library section)
-- [ ] Verification — grep gate empty; bridge tests (byte delivery,
+- [x] Verification — grep gate empty; bridge tests (byte delivery,
       dismissal, launch failure, rendezvous timeout); full suite +
       race + hermeticity green
 
@@ -29,5 +38,5 @@ machinery).
 
 | # | Question | State |
 | --- | --- | --- |
-| 1 | idea gate (bridge semantics, stdin on popup TTY) | open |
-| 2 | exec's exit code without the wrapper | open — default (a) exchange-status only |
+| 1 | idea gate (bridge semantics, stdin on popup TTY) | resolved 2026-08-19 — confirmed |
+| 2 | exec's exit code without the wrapper | resolved 2026-08-19 — exchange status only |

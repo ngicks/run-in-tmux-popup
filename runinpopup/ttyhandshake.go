@@ -30,12 +30,10 @@ type TTYHandshake struct {
 //
 // Backends build the handshake themselves because the popup mechanism decides
 // how the payload receives the FIFO paths — tmux injects them as popup env,
-// zellij can only embed them in the command line — and therefore how well the
-// announcement can be hardened.
+// zellij can only embed them in the command line.
 type TTYHandshaker interface {
 	Backend
-	// NewTTYHandshake builds a handshake for one popup. It is called once per
-	// exchange so a backend may mint per-popup secrets.
+	// NewTTYHandshake builds a handshake for one popup.
 	NewTTYHandshake(ttyFifo, doneFifo string) (TTYHandshake, error)
 }
 

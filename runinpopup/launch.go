@@ -309,6 +309,10 @@ func (c *PopupCommand) Wait() error {
 // the same run a success. The launcher's failure is still reported when a stream
 // failed too: a popup that died is why the stream ended, and explains it better
 // than the stream can.
+//
+// A launch that named no endpoint stream has nothing to decide by — every
+// verdict here would be vacuously clean, launcher failure included — so such a
+// launch waits through Wait.
 func (c *PopupCommand) WaitStreams() error {
 	streamErr := c.endpoints.Wait()
 	launcherErr := c.waitLauncher()
