@@ -77,3 +77,19 @@ payload wrapper gone, only tmux display-popup's launcher even carries
 the inner status (floating-pane/zellij launchers return early), so
 forwarding it would behave differently per backend. Rejected:
 forwarding the status where the backend happens to provide it.
+
+## Env travels via a sourced env file where the multiplexer has no env flag (user, 2026-08-19)
+
+Orthogonal to the exec bridge, decided in the same session. Context:
+zellij has no `-e`-style env injection flag, so its client currently
+exports PopupSpec.Env inline in the payload argv (`export K=V; …`),
+visible to every process via ps for the pane's lifetime. The values
+are configuration, not secrets — but there is no reason to expose them
+when the workspace already offers a better channel. Decision (user:
+"zellij or some other impl without -e flag"): backends whose
+multiplexer lacks an env flag write the env to a mode-0600 shell file
+in the launch workspace and have the popup command source it; the argv
+then carries only the file path. The workspace is mode-0700, the same
+protection level as the FIFOs beside it. tmux keeps `-e` — it has a
+real flag, and uniformity was explicitly not chosen. Rejected: the
+uniform launcher-owned env file across all backends.
