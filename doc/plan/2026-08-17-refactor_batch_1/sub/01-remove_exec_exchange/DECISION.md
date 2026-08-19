@@ -44,3 +44,25 @@ an ordinary run's directory is removed (with whatever the launch left
 in it), a debug run's is kept with its log.txt. This supersedes the
 parent batch's "non-debug creates nothing, the launch owns the
 directory" shape from the legacyshim/runworkspace slice.
+
+## Config.DefaultBackend renamed to Config.Backend (user, 2026-08-19)
+
+Orthogonal to the exec bridge, decided in the same session: the field's
+name lied — the --backend flag is merged into it before use, so what
+resolveRuntime reads is the flag-overridden selection, not a default.
+The user chose renaming the field itself over separating the flag into
+its own input or renaming only locals: `Config.DefaultBackend` →
+`Config.Backend`, JSON/YAML key `default_backend` → `backend`, env
+`RUN_IN_POPUP_DEFAULT_BACKEND` → `RUN_IN_POPUP_BACKEND`. A deliberate
+pre-1.0 config-schema break; precedence semantics (flag > config >
+detection, explicitly-empty flag re-detects) are unchanged.
+
+## tmux tty-handshake guard secrets removed (user, 2026-08-19)
+
+Orthogonal to the exec bridge, decided in the same session: the
+per-popup SEC_PREFIX/SEC_SUFFIX wrapping of the announced tty in the
+tmux handshake is unnecessary — the FIFOs are mode-0600 files in a
+mode-0700 workspace, so filesystem permissions already decide who can
+speak on them; the secrets re-checked the same boundary. Both tmux
+backends now announce the tty as-is (ValidateTTY nil), matching zellij,
+whose "guard would be theater" contrast comment is retired with it.

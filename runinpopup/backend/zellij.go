@@ -66,9 +66,8 @@ func (b *Zellij) Prepare(_ context.Context) (func(context.Context) error, error)
 // shipped — so the argv this package builds stays identical to that binary's.
 const zellijHandshakePaneName = "pinentry-curses"
 
-// NewTTYHandshake announces the tty unguarded: "zellij run" has no env
-// injection flag, so a prefix/suffix secret would have to travel in the argv,
-// where any process on the machine can read it — the guard would be theater.
+// NewTTYHandshake announces the tty as-is; "zellij run" has no env injection
+// flag, so the FIFO paths travel in the argv itself.
 func (b *Zellij) NewTTYHandshake(
 	ttyFifo, doneFifo string,
 ) (runinpopup.TTYHandshake, error) {

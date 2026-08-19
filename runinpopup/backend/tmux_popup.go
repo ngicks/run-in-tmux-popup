@@ -64,7 +64,7 @@ func (b *TmuxPopup) Prepare(_ context.Context) (func(context.Context) error, err
 }
 
 // NewTTYHandshake uses the shared tmux handshake: display-popup injects the
-// FIFO paths and the guard secrets as popup env (-e).
+// FIFO paths as popup env (-e).
 func (b *TmuxPopup) NewTTYHandshake(
 	ttyFifo, doneFifo string,
 ) (runinpopup.TTYHandshake, error) {

@@ -84,18 +84,17 @@ func TestTmuxPopup_Launch_ttyHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTTYHandshake: %v", err)
 	}
-	prefix := handshake.Spec.Env["SEC_PREFIX"]
-	suffix := handshake.Spec.Env["SEC_SUFFIX"]
+	if handshake.ValidateTTY != nil {
+		t.Error("ValidateTTY must be nil: the announced tty is taken as-is")
+	}
 
 	path, args := b.tmux.PopupCommand(b.popupRequest(launchSpec(handshake.Spec)))
 	assertCommand(t, path, args, "/usr/bin/tmux", []string{
 		"popup",
 		"-c", "%1",
 		"-e", "DONE_FIFO_FILE=/tmp/popup/done",
-		"-e", "SEC_PREFIX=" + prefix,
-		"-e", "SEC_SUFFIX=" + suffix,
 		"-e", "TTY_FIFO_FILE=/tmp/popup/tty",
-		"-E", "echo ${SEC_PREFIX}$(tty)${SEC_SUFFIX} >> ${TTY_FIFO_FILE}" +
+		"-E", "echo $(tty) >> ${TTY_FIFO_FILE}" +
 			" && read done < ${DONE_FIFO_FILE}",
 	})
 }
@@ -124,59 +123,6 @@ func TestTmuxBackends_sessionEnviron(t *testing.T) {
 	}
 }
 
-func TestTmuxPopup_ValidateTTY(t *testing.T) {
-	b := tmuxBackend(t)
-
-	handshake, err := b.NewTTYHandshake("/tmp/popup/tty", "/tmp/popup/done")
-	if err != nil {
-		t.Fatalf("NewTTYHandshake: %v", err)
-	}
-	prefix := handshake.Spec.Env["SEC_PREFIX"]
-	suffix := handshake.Spec.Env["SEC_SUFFIX"]
-	if prefix == "" || suffix == "" || prefix == suffix {
-		t.Fatalf("prefix = %q, suffix = %q: want two distinct secrets", prefix, suffix)
-	}
-
-	for _, tc := range []struct {
-		name string
-		line string
-		want string
-	}{
-		{"guarded tty", prefix + "/dev/pts/3" + suffix, "/dev/pts/3"},
-		{"empty tty still unwraps", prefix + suffix, ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := handshake.ValidateTTY(tc.line)
-			if err != nil {
-				t.Fatalf("ValidateTTY(%q): %v", tc.line, err)
-			}
-			if got != tc.want {
-				t.Errorf("ValidateTTY(%q) = %q, want %q", tc.line, got, tc.want)
-			}
-		})
-	}
-
-	for _, tc := range []struct {
-		name string
-		line string
-	}{
-		{"bare tty", "/dev/pts/3"},
-		{"no prefix", "/dev/pts/3" + suffix},
-		{"no suffix", prefix + "/dev/pts/3"},
-		{"swapped secrets", suffix + "/dev/pts/3" + prefix},
-		{"foreign secrets", strings.Repeat("0", len(prefix)) +
-			"/dev/pts/3" + strings.Repeat("0", len(suffix))},
-		{"empty line", ""},
-	} {
-		t.Run("reject/"+tc.name, func(t *testing.T) {
-			got, err := handshake.ValidateTTY(tc.line)
-			if err == nil {
-				t.Fatalf("ValidateTTY(%q) = %q, want an error", tc.line, got)
-			}
-		})
-	}
-}
-
 func TestTmuxFloatingPane_Launch_ttyHandshake(t *testing.T) {
 	b := tmuxFloatingPaneBackend(t)
 
@@ -184,39 +130,19 @@ func TestTmuxFloatingPane_Launch_ttyHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTTYHandshake: %v", err)
 	}
-	prefix := handshake.Spec.Env["SEC_PREFIX"]
-	suffix := handshake.Spec.Env["SEC_SUFFIX"]
+	if handshake.ValidateTTY != nil {
+		t.Error("ValidateTTY must be nil: the announced tty is taken as-is")
+	}
 
 	path, args := b.tmux.NewPaneCommand(b.paneRequest(launchSpec(handshake.Spec)))
 	assertCommand(t, path, args, "/usr/bin/tmux", []string{
 		"new-pane",
 		"-t", "work",
 		"-e", "DONE_FIFO_FILE=/tmp/popup/done",
-		"-e", "SEC_PREFIX=" + prefix,
-		"-e", "SEC_SUFFIX=" + suffix,
 		"-e", "TTY_FIFO_FILE=/tmp/popup/tty",
-		"--", "echo ${SEC_PREFIX}$(tty)${SEC_SUFFIX} >> ${TTY_FIFO_FILE}" +
+		"--", "echo $(tty) >> ${TTY_FIFO_FILE}" +
 			" && read done < ${DONE_FIFO_FILE}",
 	})
-}
-
-// The guard is the tmux-popup one, shared: same secrets, same validator.
-func TestTmuxFloatingPane_ValidateTTY(t *testing.T) {
-	handshake, err := tmuxFloatingPaneBackend(t).
-		NewTTYHandshake("/tmp/popup/tty", "/tmp/popup/done")
-	if err != nil {
-		t.Fatalf("NewTTYHandshake: %v", err)
-	}
-	prefix := handshake.Spec.Env["SEC_PREFIX"]
-	suffix := handshake.Spec.Env["SEC_SUFFIX"]
-
-	got, err := handshake.ValidateTTY(prefix + "/dev/pts/3" + suffix)
-	if err != nil || got != "/dev/pts/3" {
-		t.Errorf("ValidateTTY = %q, %v, want %q", got, err, "/dev/pts/3")
-	}
-	if _, err := handshake.ValidateTTY("/dev/pts/3"); err == nil {
-		t.Error("an unguarded tty must be rejected")
-	}
 }
 
 // new-pane has no title flag, so the spec's title has nowhere to go.

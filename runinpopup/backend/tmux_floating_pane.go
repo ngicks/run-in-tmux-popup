@@ -63,7 +63,7 @@ func (b *TmuxFloatingPane) paneRequest(spec runinpopup.LaunchSpec) tmux.PaneRequ
 }
 
 // NewTTYHandshake uses the shared tmux handshake: new-pane injects the FIFO
-// paths and the guard secrets as pane env (-e), same as display-popup.
+// paths as pane env (-e), same as display-popup.
 func (b *TmuxFloatingPane) NewTTYHandshake(
 	ttyFifo, doneFifo string,
 ) (runinpopup.TTYHandshake, error) {
