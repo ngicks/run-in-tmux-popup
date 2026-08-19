@@ -69,7 +69,7 @@ type ConfigFieldDoc struct {
 func ConfigDocs() []ConfigFieldDoc {
 	return []ConfigFieldDoc{
 		{Name: "PinentryPath", Type: "string", Key: "pinentry_path", Desc: "pinentry binary"},
-		{Name: "DefaultBackend", Type: "string", Key: "default_backend", Desc: "backend to use"},
+		{Name: "Backend", Type: "string", Key: "backend", Desc: "backend to use"},
 		{
 			Name: "Timeouts",
 			Key:  "timeouts",

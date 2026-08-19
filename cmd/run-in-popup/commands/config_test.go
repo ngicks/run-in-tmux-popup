@@ -33,7 +33,7 @@ func TestHelp_namesEveryBackend(t *testing.T) {
 		text func(t *testing.T) string
 	}{
 		{
-			name: "config describes default_backend",
+			name: "config describes backend",
 			text: func(t *testing.T) string { return findCommand(t, "config").Long },
 		},
 		{

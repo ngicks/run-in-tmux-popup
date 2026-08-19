@@ -28,9 +28,9 @@ type commandRuntime struct {
 
 // resolveRuntime overlays the flag layer on the configuration and builds the
 // popup backend for it. The backend is the explicitly-flagged one, else the
-// configured default_backend, else whatever the environment reveals — an
-// explicitly empty flag value clears a configured default and so asks for
-// detection again.
+// configured backend, else whatever the environment reveals — an explicitly
+// empty flag value clears a configured backend and so asks for detection
+// again.
 //
 // environ holds "KEY=VALUE" entries, the form os.Environ returns: every ambient
 // value the resolution consumes arrives through it, so the precedence is
@@ -40,7 +40,7 @@ func resolveRuntime(inputs runtimeInputs, environ []string) (commandRuntime, err
 	userData := runinpopup.ParsePinentryUserData(lookupEnviron(environ, "PINENTRY_USER_DATA"))
 	tmuxEnv := lookupEnviron(environ, "TMUX")
 
-	backendName := cfg.DefaultBackend
+	backendName := cfg.Backend
 	if backendName == "" {
 		var err error
 		backendName, err = backend.DetectName(

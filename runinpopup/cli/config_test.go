@@ -20,8 +20,8 @@ func TestRenderConfig(t *testing.T) {
 		{
 			name: "no format writes indented JSON carrying every key",
 			cfg: runinpopup.Config{
-				PinentryPath:   "/usr/bin/pinentry-curses",
-				DefaultBackend: "tmux-popup",
+				PinentryPath: "/usr/bin/pinentry-curses",
+				Backend:      "tmux-popup",
 				Timeouts: runinpopup.TimeoutsConfig{
 					Overall:   2 * time.Minute,
 					TTYRead:   20 * time.Second,
@@ -30,7 +30,7 @@ func TestRenderConfig(t *testing.T) {
 			},
 			want: `{
   "pinentry_path": "/usr/bin/pinentry-curses",
-  "default_backend": "tmux-popup",
+  "backend": "tmux-popup",
   "timeouts": {
     "overall": 120000000000,
     "tty_read": 20000000000,
@@ -43,7 +43,7 @@ func TestRenderConfig(t *testing.T) {
 			name: "a zero config spells its zeros out rather than dropping keys",
 			want: `{
   "pinentry_path": "",
-  "default_backend": "",
+  "backend": "",
   "timeouts": {
     "overall": 0,
     "tty_read": 0,
@@ -73,13 +73,13 @@ func TestRenderConfig(t *testing.T) {
 		},
 		{
 			name:   "a template rendering nothing still ends in a newline",
-			format: "{{.DefaultBackend}}",
+			format: "{{.Backend}}",
 			want:   "\n",
 		},
 		{
 			name:   "literal text passes through",
-			cfg:    runinpopup.Config{DefaultBackend: "zellij"},
-			format: "backend={{.DefaultBackend}}",
+			cfg:    runinpopup.Config{Backend: "zellij"},
+			format: "backend={{.Backend}}",
 			want:   "backend=zellij\n",
 		},
 	} {

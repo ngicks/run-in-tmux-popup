@@ -109,12 +109,12 @@ func TestExecFlagOverrides(t *testing.T) {
 		{
 			name: "backend overlays",
 			argv: []string{"--backend=zellij"},
-			want: runinpopup.PartialConfig{DefaultBackend: ptr("zellij")},
+			want: runinpopup.PartialConfig{Backend: ptr("zellij")},
 		},
 		{
 			name: "an explicitly empty flag is a value, not an absence",
 			argv: []string{"--backend="},
-			want: runinpopup.PartialConfig{DefaultBackend: ptr("")},
+			want: runinpopup.PartialConfig{Backend: ptr("")},
 		},
 		{
 			// The popup title belongs to one run, so it never reaches the config.
@@ -127,7 +127,7 @@ func TestExecFlagOverrides(t *testing.T) {
 			cmd, backend, _ := parseExecFlags(t, tc.argv)
 
 			got := execFlagOverrides(cmd, backend)
-			assertStringPtr(t, "DefaultBackend", got.DefaultBackend, tc.want.DefaultBackend)
+			assertStringPtr(t, "Backend", got.Backend, tc.want.Backend)
 			if got.PinentryPath != nil {
 				t.Errorf("PinentryPath = %q, want it absent: no exec flag feeds it",
 					*got.PinentryPath)

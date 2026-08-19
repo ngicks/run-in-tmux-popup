@@ -23,7 +23,7 @@ The value passed to --format has this shape (Go field name, type, JSON key);
 nesting is shown as a tree so deep configs stay readable:
 
 %s
-Valid DefaultBackend values are %s;
+Valid Backend values are %s;
 empty auto-detects from the environment. Durations print as nanosecond counts
 in JSON; the environment layer accepts Go duration strings
 (RUN_IN_POPUP_TIMEOUTS_OVERALL=2m).

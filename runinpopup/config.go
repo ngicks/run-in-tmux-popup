@@ -44,10 +44,11 @@ const (
 type Config struct {
 	// PinentryPath is the pinentry binary the proxy executes outside the popup.
 	PinentryPath string `json:"pinentry_path" yaml:"pinentry_path"`
-	// DefaultBackend names the popup backend used when no backend is given
-	// explicitly. Valid values are "tmux-popup", "tmux-floating-pane" and
-	// "zellij"; empty means auto-detect from the environment.
-	DefaultBackend string `json:"default_backend" yaml:"default_backend"`
+	// Backend names the popup backend to use: the config file and the
+	// environment set it, the --backend flag overrides it. Valid values are
+	// "tmux-popup", "tmux-floating-pane" and "zellij"; empty means auto-detect
+	// from the environment.
+	Backend string `json:"backend" yaml:"backend"`
 	// Timeouts bounds the popup/pinentry handshake (nested sub-config:
 	// deep-merged).
 	Timeouts TimeoutsConfig `json:"timeouts" yaml:"timeouts"`
@@ -68,13 +69,13 @@ type TimeoutsConfig struct {
 // DefaultConfig is the lowest-precedence layer. Initialize maps and sub-configs
 // here so later layers deep-merge into a populated base.
 //
-// DefaultBackend stays empty on purpose: an unset backend means "detect from
+// Backend stays empty on purpose: an unset backend means "detect from
 // PINENTRY_USER_DATA / $TMUX / $ZELLIJ", so materializing a concrete backend
 // here would make that detection unreachable.
 func DefaultConfig() Config {
 	return Config{
-		PinentryPath:   "/usr/bin/pinentry-curses",
-		DefaultBackend: "",
+		PinentryPath: "/usr/bin/pinentry-curses",
+		Backend:      "",
 		Timeouts: TimeoutsConfig{
 			Overall:   2 * time.Minute,
 			TTYRead:   20 * time.Second,
@@ -102,9 +103,9 @@ func DefaultConfig() Config {
 //
 //nolint:lll // triple json/yaml/env tags; one field per line, never wrap tags
 type PartialConfig struct {
-	PinentryPath   *string               `json:"pinentry_path,omitzero" yaml:"pinentry_path,omitempty" env:"PINENTRY_PATH"`
-	DefaultBackend *string               `json:"default_backend,omitzero" yaml:"default_backend,omitempty" env:"DEFAULT_BACKEND"`
-	Timeouts       PartialTimeoutsConfig `json:"timeouts,omitzero" yaml:"timeouts,omitempty" envPrefix:"TIMEOUTS_"`
+	PinentryPath *string               `json:"pinentry_path,omitzero" yaml:"pinentry_path,omitempty" env:"PINENTRY_PATH"`
+	Backend      *string               `json:"backend,omitzero" yaml:"backend,omitempty" env:"BACKEND"`
+	Timeouts     PartialTimeoutsConfig `json:"timeouts,omitzero" yaml:"timeouts,omitempty" envPrefix:"TIMEOUTS_"`
 }
 
 //nolint:lll // triple json/yaml/env tags; one field per line, never wrap tags
@@ -123,8 +124,8 @@ func (p PartialConfig) Apply(base Config) Config {
 	if p.PinentryPath != nil {
 		base.PinentryPath = *p.PinentryPath
 	}
-	if p.DefaultBackend != nil {
-		base.DefaultBackend = *p.DefaultBackend
+	if p.Backend != nil {
+		base.Backend = *p.Backend
 	}
 	base.Timeouts = p.Timeouts.Apply(base.Timeouts)
 	return base

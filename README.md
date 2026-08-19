@@ -174,8 +174,7 @@ window sees it, and there is no client targeting.
 The backend is resolved in this order, first hit wins:
 
 1. `--backend`
-2. `default_backend` from the environment (`RUN_IN_POPUP_DEFAULT_BACKEND`) or
-   the config file
+2. `backend` from the environment (`RUN_IN_POPUP_BACKEND`) or the config file
 3. auto-detection: `$PINENTRY_USER_DATA`'s `KIND`, then `$TMUX`, then
    `$ZELLIJ`
 
@@ -208,7 +207,7 @@ its two mechanisms, and keeps resolving to `tmux-popup`.
 $ run-in-popup config
 {
   "pinentry_path": "/usr/bin/pinentry-curses",
-  "default_backend": "",
+  "backend": "",
   "timeouts": {
     "overall": 120000000000,
     "tty_read": 20000000000,
@@ -220,7 +219,7 @@ $ run-in-popup config
 | key                   | meaning                                             | default                    |
 | --------------------- | --------------------------------------------------- | -------------------------- |
 | `pinentry_path`       | pinentry binary run on the popup tty                | `/usr/bin/pinentry-curses` |
-| `default_backend`     | backend to use (see [above](#backend-selection)); empty means auto-detect | `""`  |
+| `backend`             | backend to use (see [above](#backend-selection)); empty means auto-detect | `""`  |
 | `timeouts.overall`    | bounds the whole popup/pinentry exchange            | 2m                         |
 | `timeouts.tty_read`   | bounds reading the popup's tty from the FIFO        | 20s                        |
 | `timeouts.done_write` | bounds signalling the popup to close                | 1s                         |
@@ -246,7 +245,7 @@ present:
 ```
 
 Every key also has an environment variable, prefixed `RUN_IN_POPUP_`:
-`RUN_IN_POPUP_PINENTRY_PATH`, `RUN_IN_POPUP_DEFAULT_BACKEND`,
+`RUN_IN_POPUP_PINENTRY_PATH`, `RUN_IN_POPUP_BACKEND`,
 `RUN_IN_POPUP_TIMEOUTS_OVERALL`, `RUN_IN_POPUP_TIMEOUTS_TTY_READ`,
 `RUN_IN_POPUP_TIMEOUTS_DONE_WRITE`. Durations are nanosecond counts in JSON but
 accept Go duration strings in the environment

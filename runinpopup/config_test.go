@@ -13,7 +13,7 @@ import (
 var configEnvVars = []string{
 	ENV_RUN_IN_POPUP_CONF,
 	"RUN_IN_POPUP_PINENTRY_PATH",
-	"RUN_IN_POPUP_DEFAULT_BACKEND",
+	"RUN_IN_POPUP_BACKEND",
 	"RUN_IN_POPUP_TIMEOUTS_OVERALL",
 	"RUN_IN_POPUP_TIMEOUTS_TTY_READ",
 	"RUN_IN_POPUP_TIMEOUTS_DONE_WRITE",
@@ -60,19 +60,19 @@ func TestLoadConfig_layering(t *testing.T) {
 		},
 		{
 			name: `file wins over the defaults`,
-			file: `{"pinentry_path":"/usr/bin/pinentry-tty","default_backend":"zellij"}`,
+			file: `{"pinentry_path":"/usr/bin/pinentry-tty","backend":"zellij"}`,
 			want: Config{
-				PinentryPath:   "/usr/bin/pinentry-tty",
-				DefaultBackend: "zellij",
-				Timeouts:       def.Timeouts,
+				PinentryPath: "/usr/bin/pinentry-tty",
+				Backend:      "zellij",
+				Timeouts:     def.Timeouts,
 			},
 		},
 		{
 			name: "a nested timeout from the file preserves its siblings",
 			file: `{"timeouts":{"overall":60000000000}}`,
 			want: Config{
-				PinentryPath:   def.PinentryPath,
-				DefaultBackend: def.DefaultBackend,
+				PinentryPath: def.PinentryPath,
+				Backend:      def.Backend,
 				Timeouts: TimeoutsConfig{
 					Overall:   time.Minute,
 					TTYRead:   def.Timeouts.TTYRead,
@@ -84,8 +84,8 @@ func TestLoadConfig_layering(t *testing.T) {
 			name: "an explicit zero in the file overwrites the default",
 			file: `{"timeouts":{"overall":0}}`,
 			want: Config{
-				PinentryPath:   def.PinentryPath,
-				DefaultBackend: def.DefaultBackend,
+				PinentryPath: def.PinentryPath,
+				Backend:      def.Backend,
 				Timeouts: TimeoutsConfig{
 					Overall:   0,
 					TTYRead:   def.Timeouts.TTYRead,
@@ -100,8 +100,8 @@ func TestLoadConfig_layering(t *testing.T) {
 				"RUN_IN_POPUP_TIMEOUTS_TTY_READ": "5s",
 			},
 			want: Config{
-				PinentryPath:   "/opt/pinentry",
-				DefaultBackend: def.DefaultBackend,
+				PinentryPath: "/opt/pinentry",
+				Backend:      def.Backend,
 				Timeouts: TimeoutsConfig{
 					Overall:   def.Timeouts.Overall,
 					TTYRead:   5 * time.Second,
@@ -111,15 +111,15 @@ func TestLoadConfig_layering(t *testing.T) {
 		},
 		{
 			name: "env wins over the file, key by key",
-			file: `{"pinentry_path":"/from/file","default_backend":"tmux-popup",` +
+			file: `{"pinentry_path":"/from/file","backend":"tmux-popup",` +
 				`"timeouts":{"overall":60000000000,"tty_read":1000000000}}`,
 			env: map[string]string{
 				"RUN_IN_POPUP_PINENTRY_PATH":     "/from/env",
 				"RUN_IN_POPUP_TIMEOUTS_TTY_READ": "5s",
 			},
 			want: Config{
-				PinentryPath:   "/from/env",
-				DefaultBackend: "tmux-popup",
+				PinentryPath: "/from/env",
+				Backend:      "tmux-popup",
 				Timeouts: TimeoutsConfig{
 					Overall:   time.Minute,
 					TTYRead:   5 * time.Second,

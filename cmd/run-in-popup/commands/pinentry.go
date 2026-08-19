@@ -27,7 +27,7 @@ KIND is "TMUX_POPUP", "TMUX_FLOATING_PANE" or "ZELLIJ_POPUP"; a "_DEBUG" suffix
 additionally writes a debug log to log.txt in the temporary directory and keeps
 that directory around.
 
---backend wins over the configured default_backend, which in turn wins over
+--backend wins over the configured backend, which in turn wins over
 auto-detection from PINENTRY_USER_DATA, then $TMUX (which selects tmux-popup;
 tmux floating panes stay an explicit choice), then $ZELLIJ. Arguments after "--"
 are passed to the pinentry binary unchanged.`
@@ -140,7 +140,7 @@ func runPinentry(
 func pinentryFlagOverrides(cmd *cobra.Command, backend, pinentry string) runinpopup.PartialConfig {
 	var p runinpopup.PartialConfig
 	if cmd.Flags().Changed("backend") {
-		p.DefaultBackend = &backend
+		p.Backend = &backend
 	}
 	if cmd.Flags().Changed("pinentry") {
 		p.PinentryPath = &pinentry

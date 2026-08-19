@@ -41,22 +41,22 @@ func TestResolveRuntime(t *testing.T) {
 		wantErr     string
 	}{
 		{
-			name:        "the flag wins over the configured default",
-			config:      runinpopup.Config{DefaultBackend: backend.NameZellij},
-			overrides:   runinpopup.PartialConfig{DefaultBackend: new(backend.NameTmuxFloatingPane)},
+			name:        "the flag wins over the configured backend",
+			config:      runinpopup.Config{Backend: backend.NameZellij},
+			overrides:   runinpopup.PartialConfig{Backend: new(backend.NameTmuxFloatingPane)},
 			environ:     []string{tmuxEnv, zellijEnv, zellijData},
 			wantBackend: backend.NameTmuxFloatingPane,
 		},
 		{
-			name:        "the configured default wins over every ambient hint",
-			config:      runinpopup.Config{DefaultBackend: backend.NameZellij},
+			name:        "the configured backend wins over every ambient hint",
+			config:      runinpopup.Config{Backend: backend.NameZellij},
 			environ:     []string{tmuxEnv, tmuxData},
 			wantBackend: backend.NameZellij,
 		},
 		{
-			name:        "an explicitly empty flag clears the default and detection resumes",
-			config:      runinpopup.Config{DefaultBackend: backend.NameZellij},
-			overrides:   runinpopup.PartialConfig{DefaultBackend: new("")},
+			name:        "an explicitly empty flag clears the configured backend and detection resumes",
+			config:      runinpopup.Config{Backend: backend.NameZellij},
+			overrides:   runinpopup.PartialConfig{Backend: new("")},
 			environ:     []string{tmuxEnv},
 			wantBackend: backend.NameTmuxPopup,
 		},
@@ -88,7 +88,7 @@ func TestResolveRuntime(t *testing.T) {
 		},
 		{
 			name:    "a name no backend answers to",
-			config:  runinpopup.Config{DefaultBackend: "tmux"},
+			config:  runinpopup.Config{Backend: "tmux"},
 			environ: []string{tmuxEnv},
 			wantErr: errUnknownBackend,
 		},
@@ -139,8 +139,8 @@ func TestResolveRuntime_carriesMergedConfigAndUserData(t *testing.T) {
 		runtimeInputs{
 			Config: runinpopup.Config{PinentryPath: "/from/config"},
 			Overrides: runinpopup.PartialConfig{
-				PinentryPath:   new("/from/flag"),
-				DefaultBackend: new(backend.NameZellij),
+				PinentryPath: new("/from/flag"),
+				Backend:      new(backend.NameZellij),
 			},
 		},
 		[]string{"PINENTRY_USER_DATA=ZELLIJ_POPUP:/usr/bin/zellij:session-id:%1:meta:tail"},
@@ -152,8 +152,8 @@ func TestResolveRuntime_carriesMergedConfigAndUserData(t *testing.T) {
 	if rt.Config.PinentryPath != "/from/flag" {
 		t.Errorf("PinentryPath = %q, want the flag layer to win", rt.Config.PinentryPath)
 	}
-	if rt.Config.DefaultBackend != backend.NameZellij {
-		t.Errorf("DefaultBackend = %q, want %q", rt.Config.DefaultBackend, backend.NameZellij)
+	if rt.Config.Backend != backend.NameZellij {
+		t.Errorf("Backend = %q, want %q", rt.Config.Backend, backend.NameZellij)
 	}
 	want := runinpopup.PinentryUserData{
 		Kind:        "ZELLIJ_POPUP",

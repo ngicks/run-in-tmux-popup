@@ -29,7 +29,7 @@ with exit_code -1, when there is no status to report: the command never started,
 or its output could not be relayed. exec itself exits 0 whenever the exchange
 worked — the command's own status is exit_code, not this process's.
 
---backend wins over the configured default_backend, which in turn wins over
+--backend wins over the configured backend, which in turn wins over
 auto-detection from PINENTRY_USER_DATA, then $TMUX (which selects tmux-popup;
 tmux floating panes stay an explicit choice), then $ZELLIJ. Everything after
 "--" is the command and is passed through unchanged.`
@@ -192,7 +192,7 @@ func execCommandArgs(cmd *cobra.Command, args []string) ([]string, error) {
 func execFlagOverrides(cmd *cobra.Command, backend string) runinpopup.PartialConfig {
 	var p runinpopup.PartialConfig
 	if cmd.Flags().Changed("backend") {
-		p.DefaultBackend = &backend
+		p.Backend = &backend
 	}
 	return p
 }
