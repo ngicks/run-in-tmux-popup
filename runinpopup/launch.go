@@ -373,6 +373,8 @@ func (l *PopupLauncher) Exec(
 		group := cmd.endpoints
 		if s.pipe != nil {
 			group = cmd.piped
+		} else {
+			cmd.hasEndpoints = true
 		}
 		group.Go(func() error { return s.pump(launchCtx, startupTimeout) })
 	}
@@ -391,6 +393,9 @@ type PopupCommand struct {
 	// piped relays the ones it reads itself. The input relay is in neither: see
 	// PopupStreams for why nothing here waits on it.
 	endpoints, piped *errgroup.Group
+	// hasEndpoints says the endpoints group has streams to wait for, which is
+	// what WaitStreams has a verdict by.
+	hasEndpoints bool
 	stdoutPipe       io.ReadCloser
 	stderrPipe       io.ReadCloser
 	// release dismisses the popup and gives back everything the launch took. It
@@ -433,10 +438,14 @@ func (c *PopupCommand) Wait() error {
 // than the stream can.
 //
 // A launch that named no output endpoint — one that only feeds the payload's
-// stdin included — has nothing to decide by: every verdict here would be
-// vacuously clean, launcher failure included, so such a launch waits through
-// Wait.
+// stdin, or only requested pipes, included — has nothing to decide by: every
+// verdict here would be vacuously clean, launcher failure included, so such a
+// launch waits through Wait. A piped stream is not an endpoint here on purpose:
+// its verdict is whatever the caller's own read of it saw.
 func (c *PopupCommand) WaitStreams() error {
+	if !c.hasEndpoints {
+		return c.Wait()
+	}
 	streamErr := c.endpoints.Wait()
 	launcherErr := c.waitLauncher()
 	c.release()
