@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os/exec"
 	"slices"
 	"strings"
@@ -113,6 +114,10 @@ func shellSpec(script string) runinpopup.PopupSpec {
 	return runinpopup.PopupSpec{Command: []string{"sh", "-c", script}}
 }
 
+// noStdin stands in for a caller with nothing to pipe in: the command's stdin is
+// there and ends the moment it is read.
+func noStdin() io.ReadCloser { return io.NopCloser(strings.NewReader("")) }
+
 // Each stream arrives whole, in its own order, and the command's own exit status
 // is none of the bridge's business: it says nothing about whether the two
 // streams got here.
@@ -127,7 +132,7 @@ printf 'err one\n' >&2
 printf 'out two\n'
 printf 'err two\n' >&2
 exit 3`),
-		stdout, stderr,
+		noStdin(), stdout, stderr,
 	)
 	if err != nil {
 		t.Fatalf("execBridge: %v", err)
@@ -143,6 +148,59 @@ exit 3`),
 	}
 }
 
+// The third stream goes the other way: what a caller pipes into exec is what the
+// command reads, so a pipeline works through the popup.
+func TestExecBridge_relaysStdin(t *testing.T) {
+	stdout := newPopupOutput()
+
+	err := execBridge(
+		t.Context(),
+		popupLauncher(&popupShell{}),
+		shellSpec("cat"),
+		io.NopCloser(strings.NewReader("piped in by the caller")),
+		stdout, newPopupOutput(),
+	)
+	if err != nil {
+		t.Fatalf("execBridge: %v", err)
+	}
+	if got, want := stdout.String(), "piped in by the caller"; got != want {
+		t.Errorf("the command read %q, want %q", got, want)
+	}
+}
+
+// A caller's stdin is usually its terminal, and a terminal does not end because
+// the popup did. The bridge is over when the command's output is here, so the
+// read still parked on that terminal must be no part of the wait.
+func TestExecBridge_returnsWhileTheCallerStdinStaysOpen(t *testing.T) {
+	stdin, neverWritten := io.Pipe()
+	// Only so the relay left behind lets go before the test binary does; the
+	// bridge must have returned long before this runs.
+	t.Cleanup(func() { _ = neverWritten.Close() })
+
+	stdout := newPopupOutput()
+	done := make(chan error, 1)
+	go func() {
+		done <- execBridge(
+			t.Context(),
+			popupLauncher(&popupShell{}),
+			shellSpec("printf 'done without reading stdin'"),
+			stdin, stdout, newPopupOutput(),
+		)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("execBridge: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the bridge waited on an input relay whose source nobody was going to end")
+	}
+	if got, want := stdout.String(), "done without reading stdin"; got != want {
+		t.Errorf("stdout = %q, want %q", got, want)
+	}
+}
+
 // Nothing collects the output on the way through, so nothing bounds how much of
 // it there may be.
 func TestExecBridge_outputOutgrowsAPipeBuffer(t *testing.T) {
@@ -152,7 +210,7 @@ func TestExecBridge_outputOutgrowsAPipeBuffer(t *testing.T) {
 		t.Context(),
 		popupLauncher(&popupShell{}),
 		shellSpec("seq 1 40000"),
-		stdout, newPopupOutput(),
+		noStdin(), stdout, newPopupOutput(),
 	)
 	if err != nil {
 		t.Fatalf("execBridge: %v", err)
@@ -178,7 +236,7 @@ func TestExecBridge_leavesTheProcessStreamsOpen(t *testing.T) {
 		t.Context(),
 		popupLauncher(&popupShell{}),
 		shellSpec("printf 'from the popup'"),
-		unclosableWriter{stdout}, newPopupOutput(),
+		noStdin(), unclosableWriter{stdout}, newPopupOutput(),
 	)
 	if err != nil {
 		t.Fatalf("execBridge: %v", err)
@@ -208,7 +266,7 @@ func TestExecBridge_popupDismissedWhileTheCommandRuns(t *testing.T) {
 			ctx,
 			popupLauncher(&popupShell{}),
 			shellSpec("printf started; sleep 30"),
-			stdout, newPopupOutput(),
+			noStdin(), stdout, newPopupOutput(),
 		)
 	}()
 
@@ -237,7 +295,7 @@ func TestExecBridge_popupThatCannotBeOpened(t *testing.T) {
 		t.Context(),
 		popupLauncher(&popupShell{launchErr: launchErr}),
 		shellSpec("true"),
-		newPopupOutput(), newPopupOutput(),
+		noStdin(), newPopupOutput(), newPopupOutput(),
 	)
 	if !errors.Is(err, launchErr) || !strings.Contains(err.Error(), "popup failed") {
 		t.Fatalf("execBridge = %v, want a popup failure wrapping %v", err, launchErr)
@@ -255,7 +313,7 @@ func TestExecBridge_popupThatNeverRunsTheCommand(t *testing.T) {
 		t.Context(),
 		launcher,
 		shellSpec("true"),
-		newPopupOutput(), newPopupOutput(),
+		noStdin(), newPopupOutput(), newPopupOutput(),
 	)
 	elapsed := time.Since(start)
 

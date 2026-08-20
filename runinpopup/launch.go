@@ -85,6 +85,22 @@ func (o WorkspaceOptions) open(logger *slog.Logger) (dir string, release func(),
 // closes every endpoint it was handed once its stream has ended; when Exec
 // itself returns an error the endpoints were never adopted and stay the
 // caller's to close.
+//
+// Redirected stdio does not cost the payload the popup's terminal. A launch that
+// allocates any FIFO also hands the payload that terminal on descriptors of its
+// own — fd 3 open for reading, fd 4 and fd 5 open for writing — and names it in
+// the TTY_IN, TTY_OUT and TTY_ERR environment variables, so a payload that wants
+// to draw on the pane and read keys there still can. All three variables hold
+// the same path here; there are three of them because a platform that cannot
+// pass descriptors down has to be told device names instead, and splits its
+// console into a separate input and output device. A popup that has no terminal
+// gets neither the descriptors nor the variables, and runs anyway.
+//
+// Stdin is relayed but never waited on. Its relay sits in a read on the source
+// it was handed, which only whoever owns that source can end — a caller's
+// terminal never does — so no Wait may depend on it; it ends when the source
+// does, or on the first write past the popup's death, and Stdin is closed then
+// rather than when the launch is over.
 type PopupStreams struct {
 	Stdin  io.ReadCloser
 	Stdout io.WriteCloser
@@ -250,6 +266,19 @@ func (l *PopupLauncher) Exec(
 		}
 	})
 	for _, s := range set {
+		if s.src != nil {
+			// Started rather than joined, and it cannot be otherwise: this relay
+			// spends the launch parked in a read on the caller's source, which only
+			// that caller can end and which this package must not close its way out
+			// of. A wait that included it would outlast the popup it was feeding by
+			// however long the caller keeps typing nothing.
+			go func() {
+				if err := s.pump(launchCtx, startupTimeout); err != nil {
+					logger.Debug("popup payload input relay ended", slog.Any("err", err))
+				}
+			}()
+			continue
+		}
 		group := cmd.endpoints
 		if s.pipe != nil {
 			group = cmd.piped
@@ -267,8 +296,9 @@ type PopupCommand struct {
 	// release and — for exchanges that outlive it — from the caller's own
 	// failure watch, but a process can only be reaped once.
 	waitLauncher func() error
-	// endpoints relays the streams the caller handed an endpoint for; piped
-	// relays the ones it reads itself.
+	// endpoints relays the output streams the caller handed an endpoint for;
+	// piped relays the ones it reads itself. The input relay is in neither: see
+	// PopupStreams for why nothing here waits on it.
 	endpoints, piped *errgroup.Group
 	stdoutPipe       io.ReadCloser
 	stderrPipe       io.ReadCloser
@@ -277,9 +307,10 @@ type PopupCommand struct {
 	release func()
 }
 
-// Wait waits for the popup launcher to exit and for every stream relayed into a
-// caller-supplied endpoint, then dismisses the popup and gives back what the
-// launch took.
+// Wait waits for the popup launcher to exit and for every output stream relayed
+// into a caller-supplied endpoint, then dismisses the popup and gives back what
+// the launch took. The payload's input is not among them — PopupStreams says why
+// nothing waits on that relay.
 //
 // The launcher exiting is not the payload finishing — the floating-pane
 // mechanisms return as soon as the pane exists — so a caller that needs to know
@@ -299,8 +330,8 @@ func (c *PopupCommand) Wait() error {
 }
 
 // WaitStreams waits like Wait, but lets the payload's streams say how the launch
-// went: it reports nothing when every stream relayed into a caller-supplied
-// endpoint ran to its end, however the launcher then exited.
+// went: it reports nothing when every output stream relayed into a
+// caller-supplied endpoint ran to its end, however the launcher then exited.
 //
 // That is the difference, and it is what a caller relaying a payload's output
 // wants. tmux display-popup's launcher carries the payload's exit status, so
@@ -310,9 +341,10 @@ func (c *PopupCommand) Wait() error {
 // failed too: a popup that died is why the stream ended, and explains it better
 // than the stream can.
 //
-// A launch that named no endpoint stream has nothing to decide by — every
-// verdict here would be vacuously clean, launcher failure included — so such a
-// launch waits through Wait.
+// A launch that named no output endpoint — one that only feeds the payload's
+// stdin included — has nothing to decide by: every verdict here would be
+// vacuously clean, launcher failure included, so such a launch waits through
+// Wait.
 func (c *PopupCommand) WaitStreams() error {
 	streamErr := c.endpoints.Wait()
 	launcherErr := c.waitLauncher()
@@ -412,12 +444,31 @@ func outStream(
 	}
 }
 
+// popupTTYPrefix keeps the popup's terminal within the payload's reach after its
+// stdio has been redirected away from it: fd 3 reads from that terminal, fd 4 and
+// fd 5 write to it, and TTY_IN, TTY_OUT and TTY_ERR name it. Without it a payload
+// whose output is being relayed elsewhere could no longer draw on the pane it was
+// given one for.
+//
+// It has to run ahead of the group, because tty(1) reports the terminal behind
+// fd 0 and the group's redirections take fd 0 over — but only for the group, so
+// out here the capture still sees the pane. Chained on "&&" so that a popup
+// running without a terminal sets up nothing at all rather than failing the
+// launch: tty exits non-zero there, and the payload simply finds no descriptors
+// and no variables.
+const popupTTYPrefix = `run_in_popup_tty=$(tty)` +
+	` && exec 3<"$run_in_popup_tty" 4>"$run_in_popup_tty" 5>"$run_in_popup_tty"` +
+	` && export TTY_IN="$run_in_popup_tty"` +
+	` TTY_OUT="$run_in_popup_tty" TTY_ERR="$run_in_popup_tty"`
+
 // launchCommandLine folds the allocated FIFOs into the popup's command line.
 //
 // The payload is wrapped in a group so that a redirection covers all of it, and
-// not just the last command of a Script. Without allocated streams the spec's
-// own argv is handed over untouched: a backend able to run an argv directly must
-// not be pushed through a shell for nothing.
+// not just the last command of a Script, and the group is preceded by the
+// terminal handoff the redirection makes necessary. Without allocated streams
+// the spec's own argv is handed over untouched: nothing is being taken from the
+// payload, and a backend able to run an argv directly must not be pushed through
+// a shell for nothing.
 func launchCommandLine(spec PopupSpec, set []*popupStream) (command []string, script string) {
 	if len(set) == 0 {
 		return spec.Command, spec.Script
@@ -427,9 +478,10 @@ func launchCommandLine(spec PopupSpec, set []*popupStream) (command []string, sc
 		payload = shellargv.Join(spec.Command)
 	}
 	var sb strings.Builder
+	sb.WriteString(popupTTYPrefix)
 	// The newline is what makes the closing brace a command of its own, whatever
 	// the payload ends with.
-	fmt.Fprintf(&sb, "{ %s\n}", payload)
+	fmt.Fprintf(&sb, "\n{ %s\n}", payload)
 	for _, s := range set {
 		fmt.Fprintf(&sb, " %s %s", s.redirect, shellargv.Quote(s.path))
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -319,6 +320,105 @@ func TestPopupLauncher_Exec_stdinReachesThePayload(t *testing.T) {
 	}
 	if got := out.String(); got != "typed at the popup" {
 		t.Errorf("the payload read %q, want %q", got, "typed at the popup")
+	}
+}
+
+// The command line a launch builds is the whole of its contract with the
+// payload, so it is pinned as text: the redirections that take the payload's
+// stdio to the fifos, and ahead of them the handoff that keeps the popup's own
+// terminal within its reach.
+func TestLaunchCommandLine(t *testing.T) {
+	const ttyHandoff = `run_in_popup_tty=$(tty)` +
+		` && exec 3<"$run_in_popup_tty" 4>"$run_in_popup_tty" 5>"$run_in_popup_tty"` +
+		` && export TTY_IN="$run_in_popup_tty"` +
+		` TTY_OUT="$run_in_popup_tty" TTY_ERR="$run_in_popup_tty"`
+
+	for _, tc := range []struct {
+		name        string
+		spec        PopupSpec
+		streams     PopupStreams
+		wantCommand []string
+		wantScript  string
+	}{
+		{
+			name:        "nothing allocated leaves the argv alone",
+			spec:        PopupSpec{Command: []string{"make", "test"}},
+			streams:     PopupStreams{},
+			wantCommand: []string{"make", "test"},
+		},
+		{
+			name:       "nothing allocated leaves a script alone",
+			spec:       PopupSpec{Script: "make test"},
+			streams:    PopupStreams{},
+			wantScript: "make test",
+		},
+		{
+			name: "an argv payload is quoted into the group",
+			spec: PopupSpec{Command: []string{"make", "test a"}},
+			streams: PopupStreams{
+				Stdin:  io.NopCloser(strings.NewReader("")),
+				Stdout: new(popupOutput),
+				Stderr: new(popupOutput),
+			},
+			wantScript: ttyHandoff + "\n" +
+				"{ 'make' 'test a'\n" +
+				`} < '/w/stdin' > '/w/stdout' 2> '/w/stderr'`,
+		},
+		{
+			name: "one stream is redirected, the rest stays on the terminal",
+			spec: PopupSpec{Script: "make test"},
+			streams: PopupStreams{
+				Stdout: new(popupOutput),
+			},
+			wantScript: ttyHandoff + "\n" +
+				"{ make test\n" +
+				`} > '/w/stdout'`,
+		},
+		{
+			name:       "a piped stream is allocated like any other",
+			spec:       PopupSpec{Script: "make test"},
+			streams:    PopupStreams{StderrPipe: true},
+			wantScript: ttyHandoff + "\n" + "{ make test\n" + `} 2> '/w/stderr'`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set, _, _ := payloadStreams(tc.streams)
+			for _, s := range set {
+				s.path = "/w/" + s.name
+			}
+
+			command, script := launchCommandLine(tc.spec, set)
+			if !slices.Equal(command, tc.wantCommand) {
+				t.Errorf("command = %q, want %q", command, tc.wantCommand)
+			}
+			if script != tc.wantScript {
+				t.Errorf("script =\n%s\n\nwant\n%s", script, tc.wantScript)
+			}
+		})
+	}
+}
+
+// The popup's terminal reaches the payload beside its redirected stdio — and a
+// popup that has none, which is every popup the shell fake opens, hands over
+// nothing rather than failing the launch.
+func TestPopupLauncher_Exec_aPopupWithoutATerminal(t *testing.T) {
+	out := new(popupOutput)
+	launcher := &PopupLauncher{Backend: &shellBackend{}}
+
+	popup, err := launcher.Exec(
+		t.Context(),
+		PopupSpec{Script: `printf 'in=[%s] out=[%s] err=[%s] ' "$TTY_IN" "$TTY_OUT" "$TTY_ERR"
+if (exec 0<&3) 2>/dev/null; then printf 'fd3=open'; else printf 'fd3=absent'; fi`},
+		PopupStreams{Stdout: out},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := popup.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if got, want := out.String(), "in=[] out=[] err=[] fd3=absent"; got != want {
+		t.Errorf("the payload saw %q, want %q", got, want)
 	}
 }
 

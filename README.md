@@ -6,7 +6,8 @@ The current entrypoint is **`run-in-popup`**. Its `pinentry` subcommand proxies
 the Assuan exchange gpg-agent runs over stdin/stdout to a `pinentry-curses`
 drawing in a tmux `display-popup`, a tmux floating pane or a zellij floating
 pane. Its [`exec`](#run-in-popup-exec) subcommand runs any command in such a
-popup and relays what it writes back to the terminal that called it.
+popup, feeds it whatever the calling shell pipes in, and relays what it writes
+back to the terminal that called it.
 
 The older `tmux-popup-pinentry-curses` / `zellij-popup-pinentry-curses`
 binaries still work but are [deprecated](#deprecated-legacy-binaries).
@@ -262,31 +263,39 @@ Flags:
       --title string     popup title (default: the backend's own; tmux-floating-pane has no title flag and ignores it)
 ```
 
-It opens a popup, lets it run the command, and bridges the command's streams
-back to the shell that called it. stdin is the popup's terminal, so the command
-may prompt there; everything it writes to stdout and stderr is relayed
-to `exec`'s **own** stdout and stderr as it arrives — unaltered, and each stream
-on its own:
+It opens a popup, lets it run the command, and bridges all three of the command's
+standard streams back to the shell that called it. Whatever is piped into
+`run-in-popup exec` reaches the command's stdin, and everything it writes to
+stdout and stderr is relayed to `exec`'s **own** stdout and stderr as it arrives
+— unaltered, and each stream on its own:
 
 ```
 $ run-in-popup exec -- make test
 ```
 
 The command's output therefore ends up where the caller is, not in the popup,
-which is what makes a command that wants a terminal of its own useful here. A
-picker that draws its interface on the terminal itself and prints the selection
-on stdout puts its list in the popup and the chosen line straight into the
-caller's shell:
+which is what makes a command that wants a terminal of its own useful here — and
+the popup's terminal is not lost with it. The command gets that terminal on
+**fd 3** (open for reading), **fd 4** and **fd 5** (open for writing), with its
+path in `TTY_IN`, `TTY_OUT` and `TTY_ERR`. All three hold the same path on Unix;
+there are three names because a platform that cannot pass descriptors down has to
+be told device names instead, and splits its console into a separate input and
+output device. A popup that has no terminal passes none of them on, and the
+command runs anyway.
+
+A picker that draws its interface on `/dev/tty` and prints the selection on
+stdout therefore puts its list in the popup and the chosen line straight into the
+caller's shell. Its candidates now come from the caller's stdin, so pipe them in:
 
 ```
-$ file=$(run-in-popup exec -- fzf)
+$ file=$(find . -type f | run-in-popup exec -- fzf)
 ```
 
 `run-in-popup exec` **exits 0 once the bridge is over** — the popup opened and
-both streams ended — and **1** when the popup could not be opened, never reached
-the command, or a stream could not be relayed. The command's own status is not
-passed on: only some popup mechanisms carry it back at all, so reporting it
-would mean a different answer per backend. A caller that needs it has to have
+both output streams ended — and **1** when the popup could not be opened, never
+reached the command, or a stream could not be relayed. The command's own status
+is not passed on: only some popup mechanisms carry it back at all, so reporting
+it would mean a different answer per backend. A caller that needs it has to have
 the command report it in what it writes:
 
 ```
@@ -300,19 +309,23 @@ The backend is chosen exactly as it is for `pinentry` — see
 
 A few things worth knowing:
 
-- Both output streams are redirected into the bridge, so they are pipes rather
-  than the popup's tty and nothing the command prints appears in the popup —
-  what shows there is only what the command draws on the terminal itself.
-  Programs that gate color or progress rendering on `isatty` therefore render
-  plainly. stdin *is* the tty, so prompting still works.
+- All three standard streams are pipes rather than the popup's tty, so nothing
+  the command prints appears in the popup — what shows there is only what the
+  command draws on the terminal itself, through `/dev/tty` or the descriptors
+  above. Programs that gate color or progress rendering on `isatty` therefore
+  render plainly, and a command that wants to prompt has to read fd 3 or
+  `/dev/tty` rather than its stdin.
 - `timeouts.overall` does **not** apply here. It sizes a pinentry prompt, and any
   bound tight enough for that would kill the long builds this exists to run.
   Only the popup's *startup* is on a clock — 30 s for it to get as far as running
   the command and opening its end of each stream — after which the command runs
   for as long as it likes, and only your own Ctrl-C ends the wait.
 - A popup dismissed mid-command is not waited on: it takes the command with it,
-  which ends both streams, so `exec` returns with whatever had already arrived
-  rather than hanging.
+  which ends both output streams, so `exec` returns with whatever had already
+  arrived rather than hanging.
+- The two output streams are what the wait is for. A caller's own stdin — a
+  terminal nobody is typing at, say — never holds the bridge open past the
+  command it was feeding.
 - `--title` is dropped by `tmux-floating-pane`: `new-pane` has no title flag. It
   reaches `tmux-popup` (as `-T`) and `zellij` (as `--name`).
 
@@ -418,9 +431,15 @@ return popup.Wait()
 nil leaves it on the popup's terminal, where the user sees it and can type at it,
 and a non-nil endpoint gets a FIFO relayed to it. `StdoutPipe`/`StderrPipe` ask
 for a reader instead, handed back by `PopupCommand.StdoutPipe` / `StderrPipe` —
-os/exec style, so read them to EOF before `Wait`. `run-in-popup exec` is this
-layer used directly: the user's command as the spec, the process's own stdout
-and stderr as the two endpoints, and nothing layered on top.
+os/exec style, so read them to EOF before `Wait`. Redirecting stdio never costs
+the payload the popup's terminal: any launch allocating a FIFO also hands the
+payload that terminal on fd 3, fd 4 and fd 5 and names it in
+`TTY_IN`/`TTY_OUT`/`TTY_ERR`, exactly as described
+[for `exec`](#run-in-popup-exec) above. The payload's stdin is the one stream no
+`Wait` waits for — its relay sits in a read on the source it was given, which
+only whoever owns that source can end. `run-in-popup exec` is this layer used
+directly: the user's command as the spec, the process's own three streams as the
+endpoints, and nothing layered on top.
 
 The two exchanges layer a protocol on that. `PinentryLauncher.Call(ctx)` is the
 pinentry proxy; it needs a `PopupLauncher` whose `Backend` also implements
@@ -441,13 +460,14 @@ runs when the popup is released. `TTYHandshaker` extends it with
 payload learns the FIFO paths.
 
 Nothing here waits for the popup to be gone. `PopupCommand.Wait` returns once the
-popup *launcher* has exited and the streams it was handed endpoints for have
-ended — and the launcher exiting is not the payload finishing: the floating-pane
-mechanisms return as soon as the pane exists, so a caller that needs to know when
-the payload is done has the payload tell it, as both exchanges do over their own
-FIFOs. The restore can therefore land on a live floating pane, which tmux answers
-by pulling that pane out of its float and into the layout — not by crashing. That
-is the guarantee this relies on; it is not an ordering guarantee.
+popup *launcher* has exited and the output streams it was handed endpoints for
+have ended — and the launcher exiting is not the payload finishing: the
+floating-pane mechanisms return as soon as the pane exists, so a caller that
+needs to know when the payload is done has the payload tell it, as both exchanges
+do over their own FIFOs. The restore can therefore land on a live floating pane,
+which tmux answers by pulling that pane out of its float and into the layout —
+not by crashing. That is the guarantee this relies on; it is not an ordering
+guarantee.
 
 `PopupCommand.WaitStreams` waits the same way but lets those streams say how the
 launch went: every one of them running to its end is a success, however the

@@ -17,15 +17,22 @@ import (
 )
 
 const execLong = `exec runs a command in a terminal-multiplexer popup and connects it to the
-terminal it was called from. The popup runs the command itself: its stdin is the
-popup's terminal, so it may prompt there, and everything it writes to stdout and
-stderr is relayed to this process's own stdout and stderr as it arrives —
-unaltered, and each stream on its own.
+terminal it was called from. The popup runs the command itself, and all three of
+its standard streams are bridged: whatever is piped into exec reaches the
+command's stdin, and everything it writes to stdout and stderr is relayed to
+this process's own stdout and stderr as it arrives — unaltered, and each stream
+on its own.
 
-exec exits 0 once the bridge is over: the popup opened and both streams ended.
-It exits 1 when the popup could not be opened, never reached the command, or a
-stream could not be relayed. The command's own exit status is not passed on —
-only some popup mechanisms carry it back at all, so reporting it would mean a
+The popup's terminal stays the command's to drive. It arrives on fd 3 (open for
+reading), fd 4 and fd 5 (open for writing), and its path is in TTY_IN, TTY_OUT
+and TTY_ERR, so a program that wants to draw on the pane and read keys there
+still can; a popup with no terminal passes none of them on and the command runs
+anyway.
+
+exec exits 0 once the bridge is over: the popup opened and both output streams
+ended. It exits 1 when the popup could not be opened, never reached the command,
+or a stream could not be relayed. The command's own exit status is not passed on
+— only some popup mechanisms carry it back at all, so reporting it would mean a
 different answer per backend — and a caller that needs it has to have the
 command report it in what it writes.
 
@@ -40,7 +47,7 @@ const execWorkspacePrefix = "run-in-popup-exec-"
 
 const execExample = `  run-in-popup exec -- make test
   run-in-popup exec --title build -- go build ./...
-  file=$(run-in-popup exec --backend tmux-floating-pane -- fzf)`
+  file=$(find . -type f | run-in-popup exec --backend tmux-floating-pane -- fzf)`
 
 func execCmd(parent *cobra.Command, flagConfig *string) {
 	var (
@@ -123,26 +130,31 @@ func runExec(
 		Workspace: workspace.Options,
 	}
 	// The launch closes every endpoint it is handed once that stream ends, and
-	// these two are this process's own, handed to it by whoever ran it — so they
+	// these three are this process's own, handed to it by whoever ran it — so they
 	// go in behind ends that ignore being closed.
 	return execBridge(
 		ctx,
 		popup,
 		runinpopup.PopupSpec{Title: flagTitle, Command: command},
+		io.NopCloser(os.Stdin),
 		unclosableWriter{os.Stdout},
 		unclosableWriter{os.Stderr},
 	)
 }
 
-// execBridge runs spec in a popup and relays what it writes to stdout and
-// stderr, returning once both streams have ended.
+// execBridge runs spec in a popup with all three of its standard streams
+// connected here, and returns once what the command wrote to stdout and stderr
+// has arrived. The input relay is not waited on: it sits in a read on this
+// process's stdin, which the popup being over says nothing about.
 func execBridge(
 	ctx context.Context,
 	popup *runinpopup.PopupLauncher,
 	spec runinpopup.PopupSpec,
+	stdin io.ReadCloser,
 	stdout, stderr io.WriteCloser,
 ) error {
 	command, err := popup.Exec(ctx, spec, runinpopup.PopupStreams{
+		Stdin:  stdin,
 		Stdout: stdout,
 		Stderr: stderr,
 	})
@@ -152,7 +164,8 @@ func execBridge(
 	return command.WaitStreams()
 }
 
-// unclosableWriter hands a writer out to something that closes what it is given.
+// unclosableWriter hands a writer out to something that closes what it is given;
+// io.NopCloser is the same guard on the reading side.
 type unclosableWriter struct{ io.Writer }
 
 func (unclosableWriter) Close() error { return nil }
