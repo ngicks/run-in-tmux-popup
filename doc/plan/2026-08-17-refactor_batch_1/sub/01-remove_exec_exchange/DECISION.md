@@ -110,3 +110,19 @@ hold the same pts path. The fd handoff is shell redirection inside the
 pane's own command line, so it is multiplexer-agnostic (works under
 zellij exactly as under tmux). When the popup has no tty the fds and
 variables are simply absent rather than failing the launch.
+
+## Corrected: stdio stays on the pts; the CALLER bridge rides fd 3/4/5 (user, 2026-08-20; supersedes the previous fd-3/4/5 entry)
+
+The previous entry inverted the user's intent, and the shipped shape
+made `exec -- htop` draw on the calling terminal while the popup stayed
+blank. Corrected shape, confirmed by the user: the popup command's
+stdio 0/1/2 stay on the popup's pts, so any ordinary TUI draws in the
+popup with no convention to learn. The bridge to the caller attaches as
+extra descriptors instead — fd 3 reads what the caller piped in, fd 4
+writes to the caller's stdout, fd 5 to its stderr — and TTY_IN/TTY_OUT/
+TTY_ERR carry the FIFO *paths* so a platform or program that cannot
+inherit descriptors can open them by name. The prior $(tty)-capturing
+prefix is retired with the inversion: the pts needs no handoff when it
+was never taken away. Pipe workflows through the popup are opt-in on
+the command side (e.g. `fzf </dev/fd/3 >/dev/fd/4`); JsonIpc and
+pinentry launches keep their existing stdio-redirect semantics.
