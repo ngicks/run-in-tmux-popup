@@ -16,18 +16,23 @@ import (
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/cli"
 )
 
-const execLong = `exec runs a command in a terminal-multiplexer popup and connects it to the
-terminal it was called from. The popup runs the command itself, and all three of
-its standard streams are bridged: whatever is piped into exec reaches the
-command's stdin, and everything it writes to stdout and stderr is relayed to
-this process's own stdout and stderr as it arrives — unaltered, and each stream
-on its own.
+const execLong = `exec runs a command in a terminal-multiplexer popup. The popup runs the command
+itself, on the popup's own terminal: its stdin, stdout and stderr are the pane,
+so an interactive program simply works there and needs to know nothing about
+being run this way.
 
-The popup's terminal stays the command's to drive. It arrives on fd 3 (open for
-reading), fd 4 and fd 5 (open for writing), and its path is in TTY_IN, TTY_OUT
-and TTY_ERR, so a program that wants to draw on the pane and read keys there
-still can; a popup with no terminal passes none of them on and the command runs
-anyway.
+  run-in-popup exec -- htop
+
+A bridge back to the calling terminal is there for a command that wants it, on
+descriptors beside that terminal rather than in place of it. Whatever is piped
+into exec is readable on fd 3, everything written to fd 4 is relayed to exec's
+own stdout and everything written to fd 5 to its stderr, as it arrives, unaltered
+and each stream on its own. TTY_IN, TTY_OUT and TTY_ERR hold the three paths for
+a program that cannot inherit descriptors and has to open them by name.
+
+A pipeline through the popup therefore says so in the command:
+
+  find . -type f | run-in-popup exec -- sh -c 'fzf <&3 >&4'
 
 exec exits 0 once the bridge is over: the popup opened and both output streams
 ended. It exits 1 when the popup could not be opened, never reached the command,
@@ -45,9 +50,9 @@ tmux floating panes stay an explicit choice), then $ZELLIJ. Everything after
 // its debug log when the run has one.
 const execWorkspacePrefix = "run-in-popup-exec-"
 
-const execExample = `  run-in-popup exec -- make test
+const execExample = `  run-in-popup exec -- htop
   run-in-popup exec --title build -- go build ./...
-  file=$(find . -type f | run-in-popup exec --backend tmux-floating-pane -- fzf)`
+  file=$(find . -type f | run-in-popup exec -- sh -c 'fzf <&3 >&4')`
 
 func execCmd(parent *cobra.Command, flagConfig *string) {
 	var (
@@ -57,7 +62,7 @@ func execCmd(parent *cobra.Command, flagConfig *string) {
 
 	cmd := &cobra.Command{
 		Use:     "exec [flags] -- command [arg...]",
-		Short:   "Run a command in a popup and stream its output here",
+		Short:   "Run a command on a popup's own terminal, bridged back here on fd 3/4/5",
 		Long:    execLong,
 		Example: execExample,
 		Args:    cobra.ArbitraryArgs,
@@ -142,10 +147,10 @@ func runExec(
 	)
 }
 
-// execBridge runs spec in a popup with all three of its standard streams
-// connected here, and returns once what the command wrote to stdout and stderr
-// has arrived. The input relay is not waited on: it sits in a read on this
-// process's stdin, which the popup being over says nothing about.
+// execBridge runs spec in a popup with this process's three streams reaching it
+// beside its own, and returns once what the command wrote to fd 4 and fd 5 has
+// arrived. The input relay is not waited on: it sits in a read on this process's
+// stdin, which the popup being over says nothing about.
 func execBridge(
 	ctx context.Context,
 	popup *runinpopup.PopupLauncher,
@@ -157,6 +162,9 @@ func execBridge(
 		Stdin:  stdin,
 		Stdout: stdout,
 		Stderr: stderr,
+		// The popup's terminal is the command's, so what the user runs draws there
+		// as it would anywhere; the caller's streams are the side channel.
+		KeepStdio: true,
 	})
 	if err != nil {
 		return err

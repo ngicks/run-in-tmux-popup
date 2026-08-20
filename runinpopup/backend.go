@@ -29,8 +29,8 @@ type PopupSpec struct {
 
 // LaunchSpec is what a backend opens a popup for: one completed launch, built
 // by PopupLauncher from a PopupSpec template. Its command line is final —
-// whatever redirections the payload's stdio needs are already in it — so a
-// backend translates it into its mechanism's argv and starts it, nothing else.
+// whatever attaches the payload's streams is already in it — so a backend
+// translates it into its mechanism's argv and starts it, nothing else.
 type LaunchSpec struct {
 	// Title, Env, Command and Script carry the same meaning as their PopupSpec
 	// counterparts.
@@ -47,8 +47,9 @@ type LaunchSpec struct {
 	// it needs a lifetime of its own.
 	WorkDir string
 
-	// Stdin, Stdout and Stderr are the endpoints the payload's stdio is
-	// connected to for this launch, nil meaning "left on the popup's terminal".
+	// Stdin, Stdout and Stderr are the endpoints the payload's streams of those
+	// names are connected to for this launch, nil meaning the stream was not
+	// allocated one and stays on the popup's terminal.
 	//
 	// Backends do no piping: the multiplexer runs the payload, not this process,
 	// so the launch layer connects these endpoints to the FIFOs it has already

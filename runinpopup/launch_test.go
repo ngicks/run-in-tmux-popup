@@ -33,6 +33,10 @@ type shellBackend struct {
 	output func() string
 	// seenOnRestore is what output reported by the time restore ran.
 	seenOnRestore string
+	// stdio stands in for the pane the payload would be looking at: whatever it
+	// writes without naming a descriptor lands here. Readable once the launcher
+	// has been waited on, which joins the copier filling it.
+	stdio bytes.Buffer
 }
 
 func (b *shellBackend) Name() string { return "shell" }
@@ -44,6 +48,9 @@ func (b *shellBackend) Launch(ctx context.Context, spec LaunchSpec) (PopupHandle
 	}
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", shellPayload(spec))
+	// One writer for both, which os/exec answers with one descriptor and one
+	// copier — the pane the payload draws on does not tell them apart either.
+	cmd.Stdout, cmd.Stderr = &b.stdio, &b.stdio
 	if len(b.environ) > 0 {
 		cmd.Env = append(os.Environ(), b.environ...)
 	}
@@ -323,16 +330,130 @@ func TestPopupLauncher_Exec_stdinReachesThePayload(t *testing.T) {
 	}
 }
 
-// The command line a launch builds is the whole of its contract with the
-// payload, so it is pinned as text: the redirections that take the payload's
-// stdio to the fifos, and ahead of them the handoff that keeps the popup's own
-// terminal within its reach.
-func TestLaunchCommandLine(t *testing.T) {
-	const ttyHandoff = `run_in_popup_tty=$(tty)` +
-		` && exec 3<"$run_in_popup_tty" 4>"$run_in_popup_tty" 5>"$run_in_popup_tty"` +
-		` && export TTY_IN="$run_in_popup_tty"` +
-		` TTY_OUT="$run_in_popup_tty" TTY_ERR="$run_in_popup_tty"`
+// Where an allocated fifo lands is the difference between the two modes, and it
+// is the payload's plain stdout that shows it: taken over, it is the caller's
+// stream; left alone, it is the pane, and the caller's stream is the descriptor
+// beside it.
+func TestPopupLauncher_Exec_stdioAttachment(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		keepStdio bool
+		script    string
+		wantOut   string
+		wantPane  string
+	}{
+		{
+			name:    "the fifo takes the stdio it stands for",
+			script:  `printf 'plain stdout'`,
+			wantOut: "plain stdout",
+		},
+		{
+			name:      "the fifo arrives beside the stdio it stands for",
+			keepStdio: true,
+			script:    `printf 'plain stdout'; printf 'named fd 4' >&4`,
+			wantOut:   "named fd 4",
+			wantPane:  "plain stdout",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &shellBackend{}
+			out := new(popupOutput)
+			launcher := &PopupLauncher{Backend: backend}
 
+			popup, err := launcher.Exec(
+				t.Context(),
+				PopupSpec{Script: tc.script},
+				PopupStreams{Stdout: out, KeepStdio: tc.keepStdio},
+			)
+			if err != nil {
+				t.Fatalf("Exec: %v", err)
+			}
+			if err := popup.Wait(); err != nil {
+				t.Fatalf("Wait: %v", err)
+			}
+
+			if got := out.String(); got != tc.wantOut {
+				t.Errorf("the endpoint got %q, want %q", got, tc.wantOut)
+			}
+			if got := backend.stdio.String(); got != tc.wantPane {
+				t.Errorf("the popup's own stdio got %q, want %q", got, tc.wantPane)
+			}
+		})
+	}
+}
+
+// Beside the payload's stdio the fifos are a channel it opts into, both ways:
+// fd 3 carries what the caller sent, fd 4 and fd 5 what the payload answers, and
+// the exported paths open the same fifos for a payload that would rather name
+// them than inherit them.
+func TestPopupLauncher_Exec_keepStdio(t *testing.T) {
+	backend := &shellBackend{}
+	out, errOut := new(popupOutput), new(popupOutput)
+	launcher := &PopupLauncher{Backend: backend}
+
+	popup, err := launcher.Exec(
+		t.Context(),
+		PopupSpec{Script: `printf 'on the pane'
+cat <&3 >&4
+printf ' and by name' > "$TTY_OUT"
+printf 'to the caller' >&5`},
+		PopupStreams{
+			Stdin:     io.NopCloser(strings.NewReader("sent by the caller")),
+			Stdout:    out,
+			Stderr:    errOut,
+			KeepStdio: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := popup.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	if got, want := out.String(), "sent by the caller and by name"; got != want {
+		t.Errorf("stdout endpoint = %q, want %q", got, want)
+	}
+	if got, want := errOut.String(), "to the caller"; got != want {
+		t.Errorf("stderr endpoint = %q, want %q", got, want)
+	}
+	if got, want := backend.stdio.String(), "on the pane"; got != want {
+		t.Errorf("the popup's own stdio = %q, want %q", got, want)
+	}
+}
+
+// Nothing obliges a payload to use the descriptors beside its stdio, so the
+// streams cannot depend on it doing so: the group holding them open is what
+// closes them, and the payload exiting is therefore their end.
+func TestPopupLauncher_Exec_keepStdio_untouchedStreamsEndWithThePayload(t *testing.T) {
+	out, errOut := new(popupOutput), new(popupOutput)
+	launcher := &PopupLauncher{Backend: &shellBackend{}}
+
+	popup, err := launcher.Exec(
+		t.Context(),
+		PopupSpec{Script: `printf 'only on the pane'`},
+		PopupStreams{Stdout: out, Stderr: errOut, KeepStdio: true},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := popup.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if out.String() != "" || errOut.String() != "" {
+		t.Errorf("stdout = %q, stderr = %q; want nothing: the payload wrote to neither",
+			out.String(), errOut.String())
+	}
+	if !out.closed || !errOut.closed {
+		t.Error("both streams must have ended with the payload")
+	}
+}
+
+// The command line a launch builds is the whole of its contract with the
+// payload, so it is pinned as text in both directions: the redirections that
+// take the payload's stdio to the fifos, and — when its stdio is to be left
+// alone — the descriptors and the exported paths that carry the fifos beside it.
+func TestLaunchCommandLine(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		spec        PopupSpec
@@ -353,6 +474,14 @@ func TestLaunchCommandLine(t *testing.T) {
 			wantScript: "make test",
 		},
 		{
+			// The mode says where an allocated fifo lands, so on its own it must
+			// not put a wrapper around a payload that was allocated none.
+			name:        "the mode alone allocates nothing",
+			spec:        PopupSpec{Command: []string{"make", "test"}},
+			streams:     PopupStreams{KeepStdio: true},
+			wantCommand: []string{"make", "test"},
+		},
+		{
 			name: "an argv payload is quoted into the group",
 			spec: PopupSpec{Command: []string{"make", "test a"}},
 			streams: PopupStreams{
@@ -360,8 +489,7 @@ func TestLaunchCommandLine(t *testing.T) {
 				Stdout: new(popupOutput),
 				Stderr: new(popupOutput),
 			},
-			wantScript: ttyHandoff + "\n" +
-				"{ 'make' 'test a'\n" +
+			wantScript: "{ 'make' 'test a'\n" +
 				`} < '/w/stdin' > '/w/stdout' 2> '/w/stderr'`,
 		},
 		{
@@ -370,15 +498,36 @@ func TestLaunchCommandLine(t *testing.T) {
 			streams: PopupStreams{
 				Stdout: new(popupOutput),
 			},
-			wantScript: ttyHandoff + "\n" +
-				"{ make test\n" +
+			wantScript: "{ make test\n" +
 				`} > '/w/stdout'`,
 		},
 		{
 			name:       "a piped stream is allocated like any other",
 			spec:       PopupSpec{Script: "make test"},
 			streams:    PopupStreams{StderrPipe: true},
-			wantScript: ttyHandoff + "\n" + "{ make test\n" + `} 2> '/w/stderr'`,
+			wantScript: "{ make test\n" + `} 2> '/w/stderr'`,
+		},
+		{
+			name: "the payload keeps its stdio and gets the fifos beside it",
+			spec: PopupSpec{Command: []string{"make", "test a"}},
+			streams: PopupStreams{
+				Stdin:     io.NopCloser(strings.NewReader("")),
+				Stdout:    new(popupOutput),
+				Stderr:    new(popupOutput),
+				KeepStdio: true,
+			},
+			wantScript: `export TTY_IN='/w/stdin' TTY_OUT='/w/stdout' TTY_ERR='/w/stderr'` + "\n" +
+				"{ 'make' 'test a'\n" +
+				`} 3< '/w/stdin' 4> '/w/stdout' 5> '/w/stderr'`,
+		},
+		{
+			// A stream nobody asked for is not there to be found: no descriptor
+			// under it, and no variable naming it either.
+			name:    "an unallocated stream gets neither a descriptor nor a name",
+			spec:    PopupSpec{Script: "make test"},
+			streams: PopupStreams{StderrPipe: true, KeepStdio: true},
+			wantScript: `export TTY_ERR='/w/stderr'` + "\n" +
+				"{ make test\n" + `} 5> '/w/stderr'`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -398,10 +547,10 @@ func TestLaunchCommandLine(t *testing.T) {
 	}
 }
 
-// The popup's terminal reaches the payload beside its redirected stdio — and a
-// popup that has none, which is every popup the shell fake opens, hands over
-// nothing rather than failing the launch.
-func TestPopupLauncher_Exec_aPopupWithoutATerminal(t *testing.T) {
+// A fifo that took the payload's stdio is the whole of what that payload is
+// given: there is no descriptor beside it and no variable naming it, so a
+// payload written for its own streams finds nothing else to reach for.
+func TestPopupLauncher_Exec_redirectedStdioComesAlone(t *testing.T) {
 	out := new(popupOutput)
 	launcher := &PopupLauncher{Backend: &shellBackend{}}
 

@@ -80,21 +80,11 @@ func (o WorkspaceOptions) open(logger *slog.Logger) (dir string, release func(),
 //
 // The rule is uniform across all three streams: nil means no allocation and
 // that stdio stays on the popup's terminal, where the user sees it and can type
-// at it; non-nil means a FIFO is allocated in the launch's workspace, redirected
-// into the popup's command line, and connected to the given endpoint. The launch
-// closes every endpoint it was handed once its stream has ended; when Exec
-// itself returns an error the endpoints were never adopted and stay the
+// at it; non-nil means a FIFO is allocated in the launch's workspace, attached to
+// the payload by the popup's command line, and connected to the given endpoint.
+// The launch closes every endpoint it was handed once its stream has ended; when
+// Exec itself returns an error the endpoints were never adopted and stay the
 // caller's to close.
-//
-// Redirected stdio does not cost the payload the popup's terminal. A launch that
-// allocates any FIFO also hands the payload that terminal on descriptors of its
-// own — fd 3 open for reading, fd 4 and fd 5 open for writing — and names it in
-// the TTY_IN, TTY_OUT and TTY_ERR environment variables, so a payload that wants
-// to draw on the pane and read keys there still can. All three variables hold
-// the same path here; there are three of them because a platform that cannot
-// pass descriptors down has to be told device names instead, and splits its
-// console into a separate input and output device. A popup that has no terminal
-// gets neither the descriptors nor the variables, and runs anyway.
 //
 // Stdin is relayed but never waited on. Its relay sits in a read on the source
 // it was handed, which only whoever owns that source can end — a caller's
@@ -112,6 +102,24 @@ type PopupStreams struct {
 	// priority over the corresponding request.
 	StdoutPipe bool
 	StderrPipe bool
+
+	// KeepStdio attaches the allocated FIFOs beside the payload's stdio instead
+	// of in place of it. Its fd 0, 1 and 2 stay on the popup's terminal, and each
+	// allocated FIFO arrives on a descriptor of its own — the stdin one on fd 3
+	// open for reading, the stdout one on fd 4 and the stderr one on fd 5 open for
+	// writing — with its path in TTY_IN, TTY_OUT or TTY_ERR for a payload that
+	// cannot inherit descriptors and has to open the FIFO by name. A stream that
+	// was not allocated gets neither its descriptor nor its variable.
+	//
+	// Only the payload sees the difference: the endpoints and the pipe requests
+	// above behave the same either way, and a launch naming no stream at all is
+	// untouched by this.
+	//
+	// Which way round a launch wants depends on whose stdio it is. A payload
+	// speaking a protocol over its stdout is written for the streams and wants
+	// them taken over; an ordinary terminal program is not, and drawing in the
+	// popup as it would anywhere is the whole reason it was put there.
+	KeepStdio bool
 }
 
 // PopupLauncher opens popups through a Backend. It owns everything a launch
@@ -134,9 +142,9 @@ type PopupLauncher struct {
 // Exec opens a popup running spec and returns as soon as it has been launched.
 //
 // This is launch-level "execute": it allocates a FIFO for each stream named in
-// streams, completes the spec into the one-shot LaunchSpec that redirects the
-// payload's stdio into those FIFOs, prepares the multiplexer, launches, and
-// starts relaying the FIFOs to their endpoints. A launch naming no stream leaves
+// streams, completes the spec into the one-shot LaunchSpec that attaches those
+// FIFOs to the payload, prepares the multiplexer, launches, and starts relaying
+// the FIFOs to their endpoints. A launch naming no stream leaves
 // the spec's command line untouched, and one needing neither a stream nor a work
 // directory for its environment opens no workspace at all.
 //
@@ -380,14 +388,30 @@ const (
 	streamStderr = "stderr"
 )
 
+// attachment is how one FIFO reaches the payload: the shell operator putting it
+// on a descriptor, and the variable naming its path — empty for a FIFO that took
+// the stdio it stands for, since a payload reading its own stdin was never told a
+// path either.
+type attachment struct {
+	redirect string
+	envName  string
+}
+
+// attachments says how the three FIFOs of a launch reach its payload, under
+// PopupStreams.KeepStdio.
+func attachments(keepStdio bool) (in, out, errOut attachment) {
+	if keepStdio {
+		return attachment{"3<", "TTY_IN"}, attachment{"4>", "TTY_OUT"}, attachment{"5>", "TTY_ERR"}
+	}
+	return attachment{redirect: "<"}, attachment{redirect: ">"}, attachment{redirect: "2>"}
+}
+
 // popupStream is one payload stdio stream, the FIFO standing in for it inside
 // the popup and the endpoint it is relayed to out here.
 type popupStream struct {
+	attachment
 	name string
 	path string
-	// redirect is the shell operator connecting the payload's descriptor to the
-	// FIFO.
-	redirect string
 	// src is set for the payload's stdin, dst for its stdout and stderr.
 	src io.ReadCloser
 	dst io.WriteCloser
@@ -400,14 +424,19 @@ type popupStream struct {
 // allocates, plus the readers PopupCommand hands out. A non-nil endpoint wins
 // over its pipe request; a stream neither of them names is not allocated at all.
 func payloadStreams(streams PopupStreams) (set []*popupStream, stdout, stderr io.ReadCloser) {
+	inAt, outAt, errAt := attachments(streams.KeepStdio)
 	if streams.Stdin != nil {
-		set = append(set, &popupStream{name: streamStdin, redirect: "<", src: streams.Stdin})
+		set = append(set, &popupStream{
+			attachment: inAt,
+			name:       streamStdin,
+			src:        streams.Stdin,
+		})
 	}
-	out, stdout := outStream(streamStdout, ">", streams.Stdout, streams.StdoutPipe)
+	out, stdout := outStream(streamStdout, outAt, streams.Stdout, streams.StdoutPipe)
 	if out != nil {
 		set = append(set, out)
 	}
-	errOut, stderr := outStream(streamStderr, "2>", streams.Stderr, streams.StderrPipe)
+	errOut, stderr := outStream(streamStderr, errAt, streams.Stderr, streams.StderrPipe)
 	if errOut != nil {
 		set = append(set, errOut)
 	}
@@ -429,46 +458,34 @@ func (s *popupStream) wire(spec *LaunchSpec) {
 }
 
 func outStream(
-	name, redirect string,
+	name string,
+	at attachment,
 	endpoint io.WriteCloser,
 	piped bool,
 ) (*popupStream, io.ReadCloser) {
 	switch {
 	case endpoint != nil:
-		return &popupStream{name: name, redirect: redirect, dst: endpoint}, nil
+		return &popupStream{attachment: at, name: name, dst: endpoint}, nil
 	case piped:
 		r, w := io.Pipe()
-		return &popupStream{name: name, redirect: redirect, dst: w, pipe: w}, r
+		return &popupStream{attachment: at, name: name, dst: w, pipe: w}, r
 	default:
 		return nil, nil
 	}
 }
 
-// popupTTYPrefix keeps the popup's terminal within the payload's reach after its
-// stdio has been redirected away from it: fd 3 reads from that terminal, fd 4 and
-// fd 5 write to it, and TTY_IN, TTY_OUT and TTY_ERR name it. Without it a payload
-// whose output is being relayed elsewhere could no longer draw on the pane it was
-// given one for.
-//
-// It has to run ahead of the group, because tty(1) reports the terminal behind
-// fd 0 and the group's redirections take fd 0 over — but only for the group, so
-// out here the capture still sees the pane. Chained on "&&" so that a popup
-// running without a terminal sets up nothing at all rather than failing the
-// launch: tty exits non-zero there, and the payload simply finds no descriptors
-// and no variables.
-const popupTTYPrefix = `run_in_popup_tty=$(tty)` +
-	` && exec 3<"$run_in_popup_tty" 4>"$run_in_popup_tty" 5>"$run_in_popup_tty"` +
-	` && export TTY_IN="$run_in_popup_tty"` +
-	` TTY_OUT="$run_in_popup_tty" TTY_ERR="$run_in_popup_tty"`
-
 // launchCommandLine folds the allocated FIFOs into the popup's command line.
 //
 // The payload is wrapped in a group so that a redirection covers all of it, and
-// not just the last command of a Script, and the group is preceded by the
-// terminal handoff the redirection makes necessary. Without allocated streams
-// the spec's own argv is handed over untouched: nothing is being taken from the
-// payload, and a backend able to run an argv directly must not be pushed through
-// a shell for nothing.
+// not just the last command of a Script, and whatever names the FIFOs is exported
+// ahead of that group. Without allocated streams the spec's own argv is handed
+// over untouched: nothing is being attached to the payload, and a backend able to
+// run an argv directly must not be pushed through a shell for nothing.
+//
+// The group's redirections are what open the FIFOs inside the popup, on the way
+// into the group and whichever descriptors they land on, so the rendezvous with
+// the relays out here is the same either way — as is the end of it: the group
+// exiting closes them, and that is the payload's EOF.
 func launchCommandLine(spec PopupSpec, set []*popupStream) (command []string, script string) {
 	if len(set) == 0 {
 		return spec.Command, spec.Script
@@ -478,10 +495,21 @@ func launchCommandLine(spec PopupSpec, set []*popupStream) (command []string, sc
 		payload = shellargv.Join(spec.Command)
 	}
 	var sb strings.Builder
-	sb.WriteString(popupTTYPrefix)
+	for _, s := range set {
+		if s.envName == "" {
+			continue
+		}
+		if sb.Len() == 0 {
+			sb.WriteString("export")
+		}
+		fmt.Fprintf(&sb, " %s=%s", s.envName, shellargv.Quote(s.path))
+	}
+	if sb.Len() > 0 {
+		sb.WriteString("\n")
+	}
 	// The newline is what makes the closing brace a command of its own, whatever
 	// the payload ends with.
-	fmt.Fprintf(&sb, "\n{ %s\n}", payload)
+	fmt.Fprintf(&sb, "{ %s\n}", payload)
 	for _, s := range set {
 		fmt.Fprintf(&sb, " %s %s", s.redirect, shellargv.Quote(s.path))
 	}

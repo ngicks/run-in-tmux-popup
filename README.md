@@ -263,33 +263,37 @@ Flags:
       --title string     popup title (default: the backend's own; tmux-floating-pane has no title flag and ignores it)
 ```
 
-It opens a popup, lets it run the command, and bridges all three of the command's
-standard streams back to the shell that called it. Whatever is piped into
-`run-in-popup exec` reaches the command's stdin, and everything it writes to
-stdout and stderr is relayed to `exec`'s **own** stdout and stderr as it arrives
-— unaltered, and each stream on its own:
+It opens a popup and lets it run the command **on the popup's own terminal**. The
+command's stdin, stdout and stderr are that pane, so an interactive program
+simply works there and has to know nothing about being run this way:
 
 ```
-$ run-in-popup exec -- make test
+$ run-in-popup exec -- htop
 ```
 
-The command's output therefore ends up where the caller is, not in the popup,
-which is what makes a command that wants a terminal of its own useful here — and
-the popup's terminal is not lost with it. The command gets that terminal on
-**fd 3** (open for reading), **fd 4** and **fd 5** (open for writing), with its
-path in `TTY_IN`, `TTY_OUT` and `TTY_ERR`. All three hold the same path on Unix;
-there are three names because a platform that cannot pass descriptors down has to
-be told device names instead, and splits its console into a separate input and
-output device. A popup that has no terminal passes none of them on, and the
-command runs anyway.
+A bridge back to the calling terminal is there for a command that wants one, on
+descriptors **beside** its stdio rather than in place of it. Whatever is piped
+into `run-in-popup exec` is readable on **fd 3**, everything written to **fd 4**
+is relayed to `exec`'s **own** stdout and everything written to **fd 5** to its
+stderr — as it arrives, unaltered, and each stream on its own. `TTY_IN`,
+`TTY_OUT` and `TTY_ERR` hold the three FIFO paths for a program that cannot
+inherit descriptors and has to open them by name. A stream the caller does not
+supply is allocated neither a descriptor nor a variable.
 
-A picker that draws its interface on `/dev/tty` and prints the selection on
-stdout therefore puts its list in the popup and the chosen line straight into the
-caller's shell. Its candidates now come from the caller's stdin, so pipe them in:
+A pipeline through the popup therefore has to say so in the command. `fzf` reads
+its candidate list from stdin and prints the selection to stdout, but falls back
+to generating the list itself when stdin is a terminal — which in the popup it
+is — so both ends need naming:
 
 ```
-$ file=$(find . -type f | run-in-popup exec -- fzf)
+$ file=$(find . -type f | run-in-popup exec -- sh -c 'fzf <&3 >&4')
 ```
+
+`fzf` keeps its interface off stdout, so moving only stdout leaves the list drawn
+in the popup and puts the chosen line in the caller's shell. Use `<&3` rather
+than `</dev/fd/3`: the former inherits the descriptor the popup was handed, while
+the latter re-opens the FIFO by path and blocks forever if the caller's side has
+already sent everything and closed.
 
 `run-in-popup exec` **exits 0 once the bridge is over** — the popup opened and
 both output streams ended — and **1** when the popup could not be opened, never
@@ -299,7 +303,7 @@ it would mean a different answer per backend. A caller that needs it has to have
 the command report it in what it writes:
 
 ```
-$ run-in-popup exec -- sh -c 'make test; echo "exit=$?"'
+$ run-in-popup exec -- sh -c 'make test; echo "exit=$?" >&4'
 ```
 
 Everything after `--` is the command and is passed through untouched; without a
@@ -309,12 +313,10 @@ The backend is chosen exactly as it is for `pinentry` — see
 
 A few things worth knowing:
 
-- All three standard streams are pipes rather than the popup's tty, so nothing
-  the command prints appears in the popup — what shows there is only what the
-  command draws on the terminal itself, through `/dev/tty` or the descriptors
-  above. Programs that gate color or progress rendering on `isatty` therefore
-  render plainly, and a command that wants to prompt has to read fd 3 or
-  `/dev/tty` rather than its stdin.
+- The command's three standard streams are the popup's tty, so `isatty` holds
+  there and colors, progress rendering and prompts behave as they would in any
+  terminal. Nothing it prints on them reaches the caller: `exec`'s own stdout and
+  stderr carry fd 4 and fd 5, and nothing else.
 - `timeouts.overall` does **not** apply here. It sizes a pinentry prompt, and any
   bound tight enough for that would kill the long builds this exists to run.
   Only the popup's *startup* is on a clock — 30 s for it to get as far as running
@@ -427,19 +429,25 @@ if err != nil {
 return popup.Wait()
 ```
 
-`PopupStreams` decides where the payload's stdio goes, under one rule per stream:
-nil leaves it on the popup's terminal, where the user sees it and can type at it,
-and a non-nil endpoint gets a FIFO relayed to it. `StdoutPipe`/`StderrPipe` ask
-for a reader instead, handed back by `PopupCommand.StdoutPipe` / `StderrPipe` —
-os/exec style, so read them to EOF before `Wait`. Redirecting stdio never costs
-the payload the popup's terminal: any launch allocating a FIFO also hands the
-payload that terminal on fd 3, fd 4 and fd 5 and names it in
-`TTY_IN`/`TTY_OUT`/`TTY_ERR`, exactly as described
-[for `exec`](#run-in-popup-exec) above. The payload's stdin is the one stream no
-`Wait` waits for — its relay sits in a read on the source it was given, which
-only whoever owns that source can end. `run-in-popup exec` is this layer used
+`PopupStreams` decides which of the payload's streams are allocated, under one
+rule per stream: nil allocates nothing, and a non-nil endpoint gets a FIFO
+relayed to it. `StdoutPipe`/`StderrPipe` ask for a reader instead, handed back by
+`PopupCommand.StdoutPipe` / `StderrPipe` — os/exec style, so read them to EOF
+before `Wait`.
+
+`KeepStdio` decides where an allocated FIFO lands inside the popup, and nothing
+else — the endpoints and the pipe requests behave the same either way. Off, each
+FIFO takes over the stdio it stands for, which is what a payload speaking a
+protocol over its stdout wants. On, the payload's fd 0, 1 and 2 stay on the
+popup's terminal and the FIFOs arrive beside them on fd 3, fd 4 and fd 5, with
+their paths in `TTY_IN`/`TTY_OUT`/`TTY_ERR` — an ordinary terminal program then
+draws in the popup as it would anywhere, and reaches the caller only where it
+names a descriptor. That is `run-in-popup exec`, which is this layer used
 directly: the user's command as the spec, the process's own three streams as the
-endpoints, and nothing layered on top.
+endpoints, `KeepStdio` on, and nothing layered on top.
+
+The payload's stdin is the one stream no `Wait` waits for — its relay sits in a
+read on the source it was given, which only whoever owns that source can end.
 
 The two exchanges layer a protocol on that. `PinentryLauncher.Call(ctx)` is the
 pinentry proxy; it needs a `PopupLauncher` whose `Backend` also implements

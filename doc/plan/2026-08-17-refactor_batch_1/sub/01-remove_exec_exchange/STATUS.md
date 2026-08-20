@@ -13,14 +13,19 @@ tty-handshake guard secrets are removed, `Config.DefaultBackend` is
 renamed `Config.Backend` (schema break), and zellij popup env travels
 via a sourced 0600 env file in the workspace instead of the argv.
 
-Amendment landed 2026-08-20 (user decision, recorded in DECISION.md):
-the bridge now takes all three stdio streams and the popup terminal
-moves to fd 3/4/5 + TTY_IN/TTY_OUT/TTY_ERR, captured by the launch's
-command-line prefix before the FIFO redirections; exec bridges stdin
-(pipelines flow through the popup) and its input relay is excluded
-from every wait so a caller terminal that never EOFs cannot hang the
-bridge. Verified against a real pty during implementation; pinentry
-and env-only launches get no prefix and are byte-identical.
+Amendment landed 2026-08-20, then corrected the same day (both user
+decisions, recorded in DECISION.md — the second supersedes the first):
+the first cut bridged all three stdio streams and re-exposed the pts
+on fd 3/4/5, which made `exec -- htop` draw on the calling terminal.
+The corrected shape ships as `PopupStreams.KeepStdio`: the command
+keeps the popup's pts on fd 0/1/2 (any TUI just works in the popup),
+and the caller bridge attaches beside it — fd 3 reads the caller's
+stdin, fd 4/5 write to its stdout/stderr, TTY_IN/TTY_OUT/TTY_ERR carry
+the FIFO paths (dup with `<&3`, not a `/dev/fd/3` re-open, which
+blocks once the relay closed — verified in a real shell). The $(tty)
+prefix is retired; JsonIpc/pinentry keep redirect semantics; the
+stdin relay stays outside every wait. Pipe workflows opt in on the
+command side (`fzf <&3 >&4`).
 
 No next action — the sub-plan is complete. Known open follow-up
 elsewhere: the parent plan's follow-up list (parent STATUS.md), plus

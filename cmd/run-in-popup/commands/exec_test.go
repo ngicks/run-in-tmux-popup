@@ -120,17 +120,20 @@ func noStdin() io.ReadCloser { return io.NopCloser(strings.NewReader("")) }
 
 // Each stream arrives whole, in its own order, and the command's own exit status
 // is none of the bridge's business: it says nothing about whether the two
-// streams got here.
+// streams got here. What the command prints on the popup's own terminal is none
+// of the bridge's business either — that is the pane's, and it stays there.
 func TestExecBridge_relaysBothStreams(t *testing.T) {
 	stdout, stderr := newPopupOutput(), newPopupOutput()
 
 	err := execBridge(
 		t.Context(),
 		popupLauncher(&popupShell{}),
-		shellSpec(`printf 'out one\n'
-printf 'err one\n' >&2
-printf 'out two\n'
-printf 'err two\n' >&2
+		shellSpec(`printf 'out one\n' >&4
+printf 'err one\n' >&5
+printf 'shown in the popup\n'
+printf 'and this too\n' >&2
+printf 'out two\n' >&4
+printf 'err two\n' >&5
 exit 3`),
 		noStdin(), stdout, stderr,
 	)
@@ -156,7 +159,7 @@ func TestExecBridge_relaysStdin(t *testing.T) {
 	err := execBridge(
 		t.Context(),
 		popupLauncher(&popupShell{}),
-		shellSpec("cat"),
+		shellSpec("cat <&3 >&4"),
 		io.NopCloser(strings.NewReader("piped in by the caller")),
 		stdout, newPopupOutput(),
 	)
@@ -183,7 +186,7 @@ func TestExecBridge_returnsWhileTheCallerStdinStaysOpen(t *testing.T) {
 		done <- execBridge(
 			t.Context(),
 			popupLauncher(&popupShell{}),
-			shellSpec("printf 'done without reading stdin'"),
+			shellSpec("printf 'done without reading stdin' >&4"),
 			stdin, stdout, newPopupOutput(),
 		)
 	}()
@@ -209,7 +212,7 @@ func TestExecBridge_outputOutgrowsAPipeBuffer(t *testing.T) {
 	err := execBridge(
 		t.Context(),
 		popupLauncher(&popupShell{}),
-		shellSpec("seq 1 40000"),
+		shellSpec("seq 1 40000 >&4"),
 		noStdin(), stdout, newPopupOutput(),
 	)
 	if err != nil {
@@ -235,7 +238,7 @@ func TestExecBridge_leavesTheProcessStreamsOpen(t *testing.T) {
 	err := execBridge(
 		t.Context(),
 		popupLauncher(&popupShell{}),
-		shellSpec("printf 'from the popup'"),
+		shellSpec("printf 'from the popup' >&4"),
 		noStdin(), unclosableWriter{stdout}, newPopupOutput(),
 	)
 	if err != nil {
@@ -265,7 +268,7 @@ func TestExecBridge_popupDismissedWhileTheCommandRuns(t *testing.T) {
 		done <- execBridge(
 			ctx,
 			popupLauncher(&popupShell{}),
-			shellSpec("printf started; sleep 30"),
+			shellSpec("printf started >&4; sleep 30"),
 			noStdin(), stdout, newPopupOutput(),
 		)
 	}()
