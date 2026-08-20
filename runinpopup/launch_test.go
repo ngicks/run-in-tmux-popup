@@ -698,6 +698,73 @@ func TestPopupLauncher_Exec_prepareFailureAborts(t *testing.T) {
 	}
 }
 
+// The geometry is the backend's to translate, so the launch hands it over as
+// given — all four values, whatever mixture of cells, percentages and positions
+// they are.
+func TestPopupLauncher_Exec_geometryReachesTheBackend(t *testing.T) {
+	backend := &shellBackend{}
+	launcher := &PopupLauncher{Backend: backend}
+
+	popup, err := launcher.Exec(
+		t.Context(),
+		PopupSpec{X: "C", Y: "10", Width: "80%", Height: "20", Command: []string{"true"}},
+		PopupStreams{},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := popup.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	spec := backend.launched[0]
+	got := [4]string{spec.X, spec.Y, spec.Width, spec.Height}
+	if want := [4]string{"C", "10", "80%", "20"}; got != want {
+		t.Errorf("geometry = %q, want %q", got, want)
+	}
+}
+
+// A geometry nobody can act on is a typo, and finding out must cost no popup:
+// the launch is refused before the backend is prepared, let alone launched.
+func TestPopupLauncher_Exec_malformedGeometryOpensNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		spec  PopupSpec
+		field string
+		value string
+	}{
+		{name: "x", spec: PopupSpec{X: "middle"}, field: "X", value: "middle"},
+		{name: "y", spec: PopupSpec{Y: "-5"}, field: "Y", value: "-5"},
+		{name: "width", spec: PopupSpec{Width: "80 %"}, field: "Width", value: "80 %"},
+		{
+			// A position places a popup; it cannot say how big one is.
+			name: "a specifier on a size",
+			spec: PopupSpec{Height: "C"}, field: "Height", value: "C",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &shellBackend{}
+			launcher := &PopupLauncher{Backend: backend}
+			tc.spec.Command = []string{"true"}
+
+			_, err := launcher.Exec(t.Context(), tc.spec, PopupStreams{})
+			if err == nil {
+				t.Fatal("Exec must fail: the geometry says nothing a backend could act on")
+			}
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("err = %v, want the field %q named in it", err, tc.field)
+			}
+			if !strings.Contains(err.Error(), tc.value) {
+				t.Errorf("err = %v, want the value %q quoted in it", err, tc.value)
+			}
+			if backend.prepared != 0 || len(backend.launched) != 0 {
+				t.Errorf("backend prepared %d times and launched %d specs, want neither",
+					backend.prepared, len(backend.launched))
+			}
+		})
+	}
+}
+
 // The work directory is not only for fifos: a backend whose multiplexer has no
 // environment flag has nowhere else to put one out of the argv, so a spec
 // carrying an environment gets a directory even when no stream asked for one.

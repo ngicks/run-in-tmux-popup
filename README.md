@@ -260,7 +260,12 @@ Usage:
 
 Flags:
       --backend string   popup backend, "tmux-popup", "tmux-floating-pane" or "zellij" (default: auto-detected)
+      --height string    popup height, same syntax as --width
+  -h, --help             help for exec
       --title string     popup title (default: the backend's own; tmux-floating-pane has no title flag and ignores it)
+  -w, --width string     popup width: cells or "N%" (default: the backend's own)
+      --x string         popup x position: cells, "N%" or a tmux position specifier C/R/P/M/W/S, which zellij rejects (default: the backend's own)
+      --y string         popup y position, same syntax as --x
 ```
 
 It opens a popup and lets it run the command **on the popup's own terminal**. The
@@ -310,6 +315,23 @@ Everything after `--` is the command and is passed through untouched; without a
 `--`, bare arguments work as long as the command carries no flags of its own.
 The backend is chosen exactly as it is for `pinentry` — see
 [Backend selection](#backend-selection).
+
+`--x`, `--y`, `--width` (`-w`) and `--height` place and size the popup in the
+vocabulary tmux takes: a bare number is terminal cells, `N%` a percentage of the
+terminal, and `--x` / `--y` additionally accept tmux's position specifiers —
+`C` the centre of the terminal, `R` its right side, `P` the bottom left of the
+pane, `M` the mouse position, `W` the window position on the status line, `S`
+the line above or below it. A flag left unset leaves the backend's own
+placement:
+
+```
+$ run-in-popup exec --width 80% --height 20 -- htop
+```
+
+Only the tmux backends understand the specifiers; `zellij` takes cells and
+percentages and refuses a specifier by name rather than placing the pane
+somewhere else. A malformed value fails before any popup is opened. `--height`
+has no shorthand: `-h` is `--help`.
 
 A few things worth knowing:
 
@@ -428,6 +450,11 @@ if err != nil {
 }
 return popup.Wait()
 ```
+
+`PopupSpec` also carries where the popup goes and how big it is — `X`, `Y`,
+`Width` and `Height`, the values [`exec`'s flags](#run-in-popup-exec) take, in
+the same syntax. `Exec` validates them before it opens, prepares or allocates
+anything.
 
 `PopupStreams` decides which of the payload's streams are allocated, under one
 rule per stream: nil allocates nothing, and a non-nil endpoint gets a FIFO

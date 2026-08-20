@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/geometry"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/zellij"
 )
 
@@ -57,9 +58,16 @@ func (b *Zellij) Launch(
 // goes away with the directory, so there is nothing to undo for a run that is
 // never started.
 func (b *Zellij) runRequest(spec runinpopup.LaunchSpec) (zellij.RunRequest, error) {
+	if err := rejectTmuxPositions(spec); err != nil {
+		return zellij.RunRequest{}, err
+	}
 	req := zellij.RunRequest{
 		SessionId: b.sessionId,
 		Title:     spec.Title,
+		X:         spec.X,
+		Y:         spec.Y,
+		Width:     spec.Width,
+		Height:    spec.Height,
 		Command:   spec.Command,
 		Script:    spec.Script,
 	}
@@ -77,6 +85,25 @@ func (b *Zellij) runRequest(spec runinpopup.LaunchSpec) (zellij.RunRequest, erro
 	}
 	req.EnvFile = envFile
 	return req, nil
+}
+
+// rejectTmuxPositions refuses the popup positions zellij cannot express. Cells
+// and percentages are its own vocabulary too, but the single-letter specifiers
+// are tmux's alone — "the centre of the terminal" is not something "zellij run"
+// can be asked for — and a pane placed at a guessed position instead is worse
+// than one that never opened. Only X and Y are looked at: a specifier is the
+// one value the size fields cannot hold, and the launch layer has already said
+// so by the time a request is built.
+func rejectTmuxPositions(spec runinpopup.LaunchSpec) error {
+	for _, value := range []string{spec.X, spec.Y} {
+		if geometry.IsPosition(value) {
+			return fmt.Errorf(
+				"backend %s: position %q is tmux-specific; use cells or a percentage",
+				NameZellij, value,
+			)
+		}
+	}
+	return nil
 }
 
 // Prepare is a no-op: nothing in zellij's floating-pane creation depends on the

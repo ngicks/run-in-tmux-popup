@@ -328,22 +328,30 @@ func TestExecBridge_popupThatNeverRunsTheCommand(t *testing.T) {
 	}
 }
 
-// parseExecFlags mirrors what execCmd builds — the two flags bound to locals —
-// and parses argv into them, so Changed and ArgsLenAtDash reflect a real
+// parseExecFlags mirrors what execCmd builds — the flags bound to locals — and
+// parses argv into them, so Changed and ArgsLenAtDash reflect a real
 // invocation.
-func parseExecFlags(t *testing.T, argv []string) (*cobra.Command, string, string) {
+func parseExecFlags(
+	t *testing.T,
+	argv []string,
+) (*cobra.Command, string, string, execGeometry) {
 	t.Helper()
 	var (
-		flagBackend string
-		flagTitle   string
+		flagBackend  string
+		flagTitle    string
+		flagGeometry execGeometry
 	)
 	cmd := &cobra.Command{Use: "exec"}
 	cmd.Flags().StringVar(&flagBackend, "backend", "", "")
 	cmd.Flags().StringVar(&flagTitle, "title", "", "")
+	cmd.Flags().StringVar(&flagGeometry.x, "x", "", "")
+	cmd.Flags().StringVar(&flagGeometry.y, "y", "", "")
+	cmd.Flags().StringVarP(&flagGeometry.width, "width", "w", "", "")
+	cmd.Flags().StringVar(&flagGeometry.height, "height", "", "")
 	if err := cmd.ParseFlags(argv); err != nil {
 		t.Fatalf("ParseFlags(%q): %v", argv, err)
 	}
-	return cmd, flagBackend, flagTitle
+	return cmd, flagBackend, flagTitle, flagGeometry
 }
 
 func TestExecCommandArgs(t *testing.T) {
@@ -392,7 +400,7 @@ func TestExecCommandArgs(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd, _, _ := parseExecFlags(t, tc.argv)
+			cmd, _, _, _ := parseExecFlags(t, tc.argv)
 
 			got, err := execCommandArgs(cmd, cmd.Flags().Args())
 			if tc.wantErr {
@@ -440,9 +448,15 @@ func TestExecFlagOverrides(t *testing.T) {
 			argv: []string{"--title", "build", "--", "make"},
 			want: runinpopup.PartialConfig{},
 		},
+		{
+			// Neither does where the popup sits or how big it is.
+			name: "geometry feeds nothing",
+			argv: []string{"--x", "C", "-w", "80%", "--", "make"},
+			want: runinpopup.PartialConfig{},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd, backend, _ := parseExecFlags(t, tc.argv)
+			cmd, backend, _, _ := parseExecFlags(t, tc.argv)
 
 			got := execFlagOverrides(cmd, backend)
 			assertStringPtr(t, "Backend", got.Backend, tc.want.Backend)
@@ -454,6 +468,83 @@ func TestExecFlagOverrides(t *testing.T) {
 				t.Errorf("Timeouts = %+v, want the zero partial: no flag feeds it", got.Timeouts)
 			}
 		})
+	}
+}
+
+// What the flags describe is the popup, so they reach the spec it is opened
+// with — as typed, since only the library says what a geometry value means.
+func TestExecSpec(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		argv []string
+		want runinpopup.PopupSpec
+	}{
+		{
+			name: "flags left alone leave the backend its own",
+			argv: []string{"--", "htop"},
+			want: runinpopup.PopupSpec{Command: []string{"htop"}},
+		},
+		{
+			name: "title",
+			argv: []string{"--title", "build", "--", "make"},
+			want: runinpopup.PopupSpec{Title: "build", Command: []string{"make"}},
+		},
+		{
+			name: "the four geometry flags",
+			argv: []string{"--x", "C", "--y", "10", "--width", "80%", "--height", "20", "--", "htop"},
+			want: runinpopup.PopupSpec{
+				X: "C", Y: "10", Width: "80%", Height: "20",
+				Command: []string{"htop"},
+			},
+		},
+		{
+			name: "width takes the shorthand -h cannot",
+			argv: []string{"-w", "80%", "--", "htop"},
+			want: runinpopup.PopupSpec{Width: "80%", Command: []string{"htop"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, _, title, geometry := parseExecFlags(t, tc.argv)
+
+			command, err := execCommandArgs(cmd, cmd.Flags().Args())
+			if err != nil {
+				t.Fatalf("execCommandArgs(%q): %v", tc.argv, err)
+			}
+			got := execSpec(title, geometry, command)
+			if got.Title != tc.want.Title {
+				t.Errorf("Title = %q, want %q", got.Title, tc.want.Title)
+			}
+			gotGeometry := [4]string{got.X, got.Y, got.Width, got.Height}
+			wantGeometry := [4]string{tc.want.X, tc.want.Y, tc.want.Width, tc.want.Height}
+			if gotGeometry != wantGeometry {
+				t.Errorf("geometry = %q, want %q", gotGeometry, wantGeometry)
+			}
+			if !slices.Equal(got.Command, tc.want.Command) {
+				t.Errorf("Command = %q, want %q", got.Command, tc.want.Command)
+			}
+		})
+	}
+}
+
+// -h belongs to --help, so --height goes without the shorthand its tmux flag
+// would suggest; --width keeps the one that is free.
+func TestExecCommand_geometryShorthands(t *testing.T) {
+	root := rootCmd()
+
+	cmd, _, err := root.Find([]string{"exec"})
+	if err != nil {
+		t.Fatalf("Find(exec): %v", err)
+	}
+	cmd.InitDefaultHelpFlag()
+
+	if got := cmd.Flags().Lookup("width").Shorthand; got != "w" {
+		t.Errorf("--width shorthand = %q, want %q", got, "w")
+	}
+	if got := cmd.Flags().Lookup("height").Shorthand; got != "" {
+		t.Errorf("--height shorthand = %q, want none", got)
+	}
+	if got := cmd.Flags().ShorthandLookup("h"); got == nil || got.Name != "help" {
+		t.Errorf("-h = %v, want it left to --help", got)
 	}
 }
 

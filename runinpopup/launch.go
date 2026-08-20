@@ -158,6 +158,11 @@ func (l *PopupLauncher) Exec(
 	if l.Backend == nil {
 		return nil, errors.New("PopupLauncher.Backend must be set")
 	}
+	// Before anything is opened, prepared or allocated: a geometry nobody can act
+	// on is the caller's typo, and it must cost no popup to find out.
+	if err := spec.validateGeometry(); err != nil {
+		return nil, err
+	}
 	logger := loggerOrDiscard(l.Logger)
 
 	// Undone in reverse on the way out of a launch that never happened; a launch
@@ -218,6 +223,10 @@ func (l *PopupLauncher) Exec(
 	launchSpec := LaunchSpec{
 		Title:   spec.Title,
 		Env:     spec.Env,
+		X:       spec.X,
+		Y:       spec.Y,
+		Width:   spec.Width,
+		Height:  spec.Height,
 		Command: command,
 		Script:  script,
 		WorkDir: workDir,

@@ -17,6 +17,29 @@ type PopupSpec struct {
 	// directory and has the payload source them). Map iteration order never
 	// reaches the argv: backends sort by key.
 	Env map[string]string
+	// X, Y, Width and Height place and size the popup, in the vocabulary tmux's
+	// display-popup takes: a bare number is terminal cells and "N%" a percentage
+	// of the terminal. Empty leaves the backend's own placement, and a field left
+	// empty puts nothing on a backend's command line.
+	//
+	// X and Y additionally take tmux's single-letter position specifiers, which
+	// reach tmux untranslated:
+	//
+	//	C  the centre of the terminal
+	//	R  the right side of the terminal (X only)
+	//	P  the bottom left of the pane
+	//	M  the mouse position
+	//	W  the window position on the status line
+	//	S  the line above or below the status line (Y only)
+	//
+	// Which axis a specifier suits is tmux's own rule and tmux's to enforce: all
+	// six are accepted here for both. zellij has no equivalent for any of them —
+	// its backend refuses a specifier rather than guessing at one — while cells
+	// and percentages reach every backend.
+	//
+	// A malformed value fails the launch before a popup is opened, so a typo
+	// costs nothing but the error naming it.
+	X, Y, Width, Height string
 	// Command is the argv executed inside the popup. Backends whose popup
 	// mechanism only accepts a shell command line quote and join it.
 	Command []string
@@ -32,12 +55,15 @@ type PopupSpec struct {
 // whatever attaches the payload's streams is already in it — so a backend
 // translates it into its mechanism's argv and starts it, nothing else.
 type LaunchSpec struct {
-	// Title, Env, Command and Script carry the same meaning as their PopupSpec
-	// counterparts.
-	Title   string
-	Env     map[string]string
-	Command []string
-	Script  string
+	// Title, Env, X, Y, Width, Height, Command and Script carry the same meaning
+	// as their PopupSpec counterparts. The geometry has been validated by the
+	// time a backend sees it, so what is left is translating it into flags — or,
+	// for a value the backend's multiplexer has no equivalent for, refusing it.
+	Title               string
+	Env                 map[string]string
+	X, Y, Width, Height string
+	Command             []string
+	Script              string
 
 	// WorkDir is the launch's private mode-0700 scratch directory, present
 	// whenever the launch has one: it already holds the payload FIFOs named in

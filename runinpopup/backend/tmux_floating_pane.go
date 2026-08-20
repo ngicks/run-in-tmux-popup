@@ -52,11 +52,16 @@ func (b *TmuxFloatingPane) Launch(
 }
 
 // paneRequest translates the spec for new-pane. spec.Title is dropped: new-pane
-// has no title flag.
+// has no title flag. The geometry does reach it — a floating pane is placed and
+// sized like a popup, though not through the same flag names.
 func (b *TmuxFloatingPane) paneRequest(spec runinpopup.LaunchSpec) tmux.PaneRequest {
 	return tmux.PaneRequest{
 		SessionId: b.sessionId,
 		Env:       spec.Env,
+		X:         spec.X,
+		Y:         spec.Y,
+		Width:     spec.Width,
+		Height:    spec.Height,
 		Command:   spec.Command,
 		Script:    spec.Script,
 	}

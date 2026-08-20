@@ -41,6 +41,16 @@ or a stream could not be relayed. The command's own exit status is not passed on
 different answer per backend — and a caller that needs it has to have the
 command report it in what it writes.
 
+--x, --y, --width and --height place and size the popup, in the vocabulary tmux
+takes: a bare number is terminal cells and "N%" a percentage of the terminal.
+--x and --y additionally take tmux's position specifiers — C the centre of the
+terminal, R its right side, P the bottom left of the pane, M the mouse position,
+W the window position on the status line, S the line above or below it — which
+the zellij backend rejects, having no equivalent for them. Whatever is left
+unset is the backend's own placement.
+
+  run-in-popup exec --width 80% --height 20 -- htop
+
 --backend wins over the configured backend, which in turn wins over
 auto-detection from PINENTRY_USER_DATA, then $TMUX (which selects tmux-popup;
 tmux floating panes stay an explicit choice), then $ZELLIJ. Everything after
@@ -52,12 +62,22 @@ const execWorkspacePrefix = "run-in-popup-exec-"
 
 const execExample = `  run-in-popup exec -- htop
   run-in-popup exec --title build -- go build ./...
+  run-in-popup exec --width 80% --height 20 -- htop
   file=$(find . -type f | run-in-popup exec -- sh -c 'fzf <&3 >&4')`
+
+// execGeometry is where and how big the popup is, as typed. The four values
+// travel together rather than one by one: they are same-typed neighbours, and a
+// pair of them swapped at a call site would compile and place the popup
+// somewhere else.
+type execGeometry struct {
+	x, y, width, height string
+}
 
 func execCmd(parent *cobra.Command, flagConfig *string) {
 	var (
-		flagBackend string
-		flagTitle   string
+		flagBackend  string
+		flagTitle    string
+		flagGeometry execGeometry
 	)
 
 	cmd := &cobra.Command{
@@ -67,7 +87,7 @@ func execCmd(parent *cobra.Command, flagConfig *string) {
 		Example: execExample,
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runExec(cmd, args, *flagConfig, flagBackend, flagTitle)
+			return runExec(cmd, args, *flagConfig, flagBackend, flagTitle, flagGeometry)
 		},
 	}
 
@@ -84,6 +104,34 @@ func execCmd(parent *cobra.Command, flagConfig *string) {
 		"popup title (default: the backend's own;"+
 			" tmux-floating-pane has no title flag and ignores it)",
 	)
+	cmd.Flags().StringVar(
+		&flagGeometry.x,
+		"x",
+		"",
+		`popup x position: cells, "N%" or a tmux position specifier`+
+			" C/R/P/M/W/S, which zellij rejects (default: the backend's own)",
+	)
+	cmd.Flags().StringVar(
+		&flagGeometry.y,
+		"y",
+		"",
+		"popup y position, same syntax as --x",
+	)
+	cmd.Flags().StringVarP(
+		&flagGeometry.width,
+		"width",
+		"w",
+		"",
+		`popup width: cells or "N%" (default: the backend's own)`,
+	)
+	// No shorthand: cobra hands -h to --help, so --height cannot have the one its
+	// tmux flag would suggest.
+	cmd.Flags().StringVar(
+		&flagGeometry.height,
+		"height",
+		"",
+		"popup height, same syntax as --width",
+	)
 
 	parent.AddCommand(cmd)
 }
@@ -92,6 +140,7 @@ func runExec(
 	cmd *cobra.Command,
 	args []string,
 	flagConfig, flagBackend, flagTitle string,
+	flagGeometry execGeometry,
 ) (err error) {
 	ctx := cmd.Context()
 
@@ -140,11 +189,26 @@ func runExec(
 	return execBridge(
 		ctx,
 		popup,
-		runinpopup.PopupSpec{Title: flagTitle, Command: command},
+		execSpec(flagTitle, flagGeometry, command),
 		io.NopCloser(os.Stdin),
 		unclosableWriter{os.Stdout},
 		unclosableWriter{os.Stderr},
 	)
+}
+
+// execSpec is the popup template one run of exec opens: the command to run and
+// the flags describing the popup it runs in. The geometry is handed over as
+// typed — the library is what says whether a value means anything, and says so
+// before it opens a popup.
+func execSpec(title string, geometry execGeometry, command []string) runinpopup.PopupSpec {
+	return runinpopup.PopupSpec{
+		Title:   title,
+		X:       geometry.x,
+		Y:       geometry.y,
+		Width:   geometry.width,
+		Height:  geometry.height,
+		Command: command,
+	}
 }
 
 // execBridge runs spec in a popup with this process's three streams reaching it
@@ -196,8 +260,9 @@ func execCommandArgs(cmd *cobra.Command, args []string) ([]string, error) {
 
 // execFlagOverrides turns explicitly-set flags into the topmost config layer; a
 // flag left alone stays absent from the partial, so the file and environment
-// layers keep their say. --title is not here: the popup title is a property of
-// one run, not configuration.
+// layers keep their say. --title and the geometry flags are not here: what a
+// popup is called, where it sits and how big it is are properties of one run,
+// not configuration.
 func execFlagOverrides(cmd *cobra.Command, backend string) runinpopup.PartialConfig {
 	var p runinpopup.PartialConfig
 	if cmd.Flags().Changed("backend") {

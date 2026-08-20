@@ -72,6 +72,10 @@ func launchSpec(spec runinpopup.PopupSpec) runinpopup.LaunchSpec {
 	return runinpopup.LaunchSpec{
 		Title:   spec.Title,
 		Env:     spec.Env,
+		X:       spec.X,
+		Y:       spec.Y,
+		Width:   spec.Width,
+		Height:  spec.Height,
 		Command: spec.Command,
 		Script:  spec.Script,
 	}
@@ -98,6 +102,28 @@ func TestTmuxPopup_Launch_ttyHandshake(t *testing.T) {
 		"-e", "TTY_FIFO_FILE=/tmp/popup/tty",
 		"-E", "echo $(tty) >> ${TTY_FIFO_FILE}" +
 			" && read done < ${DONE_FIFO_FILE}",
+	})
+}
+
+// The spec's geometry reaches display-popup as the flags it names.
+func TestTmuxPopup_Launch_geometry(t *testing.T) {
+	b := tmuxBackend(t)
+
+	path, args := b.tmux.PopupCommand(b.popupRequest(launchSpec(runinpopup.PopupSpec{
+		X:       "C",
+		Y:       "10",
+		Width:   "80%",
+		Height:  "20",
+		Command: []string{"htop"},
+	})))
+	assertCommand(t, path, args, "/usr/bin/tmux", []string{
+		"popup",
+		"-c", "%1",
+		"-x", "C",
+		"-y", "10",
+		"-w", "80%",
+		"-h", "20",
+		"-E", `'htop'`,
 	})
 }
 
@@ -158,6 +184,29 @@ func TestTmuxFloatingPane_Launch_dropsTitle(t *testing.T) {
 	if slices.Contains(args, "-T") || slices.Contains(args, "editor") {
 		t.Errorf("args = %#v, want the title dropped", args)
 	}
+}
+
+// The same geometry, on the flags new-pane has for it: the size on -x/-y and
+// the position on -X/-Y, which is not how display-popup spells either.
+func TestTmuxFloatingPane_Launch_geometry(t *testing.T) {
+	b := tmuxFloatingPaneBackend(t)
+
+	path, args := b.tmux.NewPaneCommand(b.paneRequest(launchSpec(runinpopup.PopupSpec{
+		X:       "C",
+		Y:       "10",
+		Width:   "80%",
+		Height:  "20",
+		Command: []string{"htop"},
+	})))
+	assertCommand(t, path, args, "/usr/bin/tmux", []string{
+		"new-pane",
+		"-t", "work",
+		"-X", "C",
+		"-Y", "10",
+		"-x", "80%",
+		"-y", "20",
+		"--", `'htop'`,
+	})
 }
 
 func TestZellij_Launch_ttyHandshake(t *testing.T) {
@@ -233,6 +282,66 @@ func TestZellij_Launch_envGoesToAWorkDirFile(t *testing.T) {
 		if strings.Contains(arg, "it's one") {
 			t.Fatalf("args = %#v, want no environment value in them", args)
 		}
+	}
+}
+
+// Cells and percentages are as much zellij's vocabulary as tmux's, so they
+// travel the whole way.
+func TestZellij_Launch_geometry(t *testing.T) {
+	b := zellijBackend(t)
+
+	req, err := b.runRequest(launchSpec(runinpopup.PopupSpec{
+		X:       "10",
+		Y:       "5%",
+		Width:   "80%",
+		Height:  "20",
+		Command: []string{"htop"},
+	}))
+	if err != nil {
+		t.Fatalf("runRequest: %v", err)
+	}
+	path, args := b.zellij.RunCommand(req)
+	assertCommand(t, path, args, "/usr/bin/zellij", []string{
+		"--session=session-id",
+		"run",
+		"--x=10",
+		"--y=5%",
+		"--width=80%",
+		"--height=20",
+		"--floating",
+		"--close-on-exit",
+		"--pinned=true",
+		"--",
+		"htop",
+	})
+}
+
+// A tmux position specifier has no zellij equivalent, and placing the pane
+// somewhere else instead would be a silent answer to a request nobody can
+// honor. Both position fields have to say so, and say which value they mean.
+func TestZellij_Launch_rejectsTmuxPositions(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		spec  runinpopup.PopupSpec
+		value string
+	}{
+		{name: "x", spec: runinpopup.PopupSpec{X: "C"}, value: "C"},
+		{name: "y", spec: runinpopup.PopupSpec{Y: "M"}, value: "M"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.spec.Command = []string{"htop"}
+
+			_, err := zellijBackend(t).runRequest(launchSpec(tc.spec))
+			if err == nil {
+				t.Fatal("runRequest must fail: zellij cannot be asked for a tmux position")
+			}
+			if !strings.Contains(err.Error(), NameZellij) {
+				t.Errorf("err = %v, want the backend named in it", err)
+			}
+			if !strings.Contains(err.Error(), tc.value) {
+				t.Errorf("err = %v, want the value %q quoted in it", err, tc.value)
+			}
+		})
 	}
 }
 

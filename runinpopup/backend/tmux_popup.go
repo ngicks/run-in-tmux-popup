@@ -52,6 +52,10 @@ func (b *TmuxPopup) popupRequest(spec runinpopup.LaunchSpec) tmux.PopupRequest {
 		ClientId: b.clientId,
 		Title:    spec.Title,
 		Env:      spec.Env,
+		X:        spec.X,
+		Y:        spec.Y,
+		Width:    spec.Width,
+		Height:   spec.Height,
 		Command:  spec.Command,
 		Script:   spec.Script,
 	}

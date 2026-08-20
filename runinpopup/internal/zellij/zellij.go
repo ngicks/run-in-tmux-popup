@@ -59,14 +59,21 @@ type RunRequest struct {
 	// travel in a file — WriteEnvFile writes one — and only its path is on the
 	// command line.
 	EnvFile string
+	// X, Y, Width and Height place and size the floating pane (--x, --y, --width,
+	// --height). zellij takes a bare number of cells or a percentage, and nothing
+	// else: the single-letter positions tmux understands have no equivalent here
+	// and are refused by whoever builds the request. Empty leaves zellij's
+	// default.
+	X, Y, Width, Height string
 	// Command is the argv the pane runs.
 	Command []string
 	// Script is a raw shell command line taking precedence over Command.
 	Script string
 }
 
-// RunCommand builds "zellij --session=<id> run [--name=<title>] --floating
-// --close-on-exit --pinned=true -- <payload>".
+// RunCommand builds "zellij --session=<id> run [--name=<title>] [--x=<x>]
+// [--y=<y>] [--width=<width>] [--height=<height>] --floating --close-on-exit
+// --pinned=true -- <payload>".
 func (c *Client) RunCommand(req RunRequest) (path string, args []string) {
 	if req.SessionId != "" {
 		args = append(args, "--session="+req.SessionId)
@@ -75,6 +82,7 @@ func (c *Client) RunCommand(req RunRequest) (path string, args []string) {
 	if req.Title != "" {
 		args = append(args, "--name="+req.Title)
 	}
+	args = append(args, geometryArgs(req)...)
 	args = append(args, "--floating", "--close-on-exit", "--pinned=true", "--")
 	return c.path, append(args, c.payload(req)...)
 }
@@ -175,6 +183,24 @@ func WriteEnvFile(dir string, env map[string]string) (string, error) {
 		return "", fmt.Errorf("writing the popup environment: %w", err)
 	}
 	return path, nil
+}
+
+// geometryArgs renders a pane's placement and size as "zellij run" flags, in
+// the order --x, --y, --width, --height. An empty value emits nothing at all,
+// leaving zellij's own placement.
+func geometryArgs(req RunRequest) []string {
+	var args []string
+	for _, f := range []struct{ flag, value string }{
+		{"--x", req.X},
+		{"--y", req.Y},
+		{"--width", req.Width},
+		{"--height", req.Height},
+	} {
+		if f.value != "" {
+			args = append(args, f.flag+"="+f.value)
+		}
+	}
+	return args
 }
 
 // commandLine renders a payload as a single shell command line.

@@ -46,6 +46,54 @@ func TestClient_RunCommand_argvRunsDirectly(t *testing.T) {
 	})
 }
 
+// Cells and percentages are zellij's own vocabulary, so they reach it as typed;
+// the flags take them in the "--flag=value" form the rest of this argv uses.
+func TestClient_RunCommand_geometry(t *testing.T) {
+	c := testClient()
+
+	path, args := c.RunCommand(RunRequest{
+		SessionId: "session-id",
+		Title:     "editor",
+		X:         "10",
+		Y:         "5%",
+		Width:     "80%",
+		Height:    "20",
+		Command:   []string{"true"},
+	})
+	assertCommand(t, path, args, "/usr/bin/zellij", []string{
+		"--session=session-id",
+		"run",
+		"--name=editor",
+		"--x=10",
+		"--y=5%",
+		"--width=80%",
+		"--height=20",
+		"--floating",
+		"--close-on-exit",
+		"--pinned=true",
+		"--",
+		"true",
+	})
+}
+
+// A field left empty is not a value: it emits no flag, and the pane lands
+// wherever zellij would have put it.
+func TestClient_RunCommand_partialGeometry(t *testing.T) {
+	path, args := New(Options{}).RunCommand(RunRequest{
+		Width:   "80%",
+		Command: []string{"true"},
+	})
+	assertCommand(t, path, args, "zellij", []string{
+		"run",
+		"--width=80%",
+		"--floating",
+		"--close-on-exit",
+		"--pinned=true",
+		"--",
+		"true",
+	})
+}
+
 // The environment reaches the pane by being sourced: the argv names the file
 // and nothing of what is in it.
 func TestClient_RunCommand_envFileIsSourced(t *testing.T) {
