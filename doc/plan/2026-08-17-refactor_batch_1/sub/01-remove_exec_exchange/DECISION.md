@@ -126,3 +126,22 @@ prefix is retired with the inversion: the pts needs no handoff when it
 was never taken away. Pipe workflows through the popup are opt-in on
 the command side (e.g. `fzf </dev/fd/3 >/dev/fd/4`); JsonIpc and
 pinentry launches keep their existing stdio-redirect semantics.
+
+## Popup geometry mimics tmux's display-popup flags (user, 2026-08-20)
+
+The abstracted popup location/size option adopts tmux's vocabulary
+rather than a new anchor scheme ("mimic tmux's flag"): PopupSpec gains
+X, Y, Width and Height as strings — a bare number is cells, "N%" is a
+percentage of the terminal, and X/Y additionally accept tmux's
+position specifiers (C centre, R right, P pane, M mouse, W window
+position, S status line) which pass through to tmux untranslated.
+Empty means the backend's own default, producing today's argv
+byte-for-byte. zellij maps cells and percentages onto
+--x/--y/--width/--height and rejects the tmux-only specifiers with an
+error naming the backend; the tmux floating-pane backend mirrors
+display-popup's flags onto new-pane, to be confirmed against the fork
+by the tagged integration suite. Exposure: the library spec plus exec
+flags --x, --y, -w/--width and --height (no -h shorthand — cobra
+reserves it for --help). Config keys and the pinentry surface are
+deferred. Rejected: an anchor+offset abstraction; raw per-backend
+pass-through fields.
