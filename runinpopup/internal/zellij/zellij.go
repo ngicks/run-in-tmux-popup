@@ -16,6 +16,10 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/sync/errgroup"
+
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/fifo"
 )
 
 // Options are the coordinates of the zellij installation a Client talks to.
@@ -100,16 +104,78 @@ type Launcher struct {
 	// waiting on the launcher and a dismissal reading what it printed have to go
 	// through it.
 	wait func() error
+	// env joins the delivery of the pane's environment, nil for a launch that
+	// carries none. Memoized like wait, and kept apart from it: a dismissal
+	// waits for the launcher alone — the pane it is closing may be exactly the
+	// one that never came for its environment.
+	env       func() error
+	cancelEnv context.CancelFunc
 	// close closes the pane this launcher opened, set by the Start that built it.
 	close     func(context.Context) error
 	closeOnce sync.Once
 	closeErr  error
 }
 
-// Wait waits for the launcher to exit and decorates a failure with the command
-// that produced it and everything it printed, which is the only trace a pane
-// that never appeared leaves.
-func (l *Launcher) Wait() error { return l.wait() }
+// Wait waits for the launcher to exit — and, for a launch carrying an
+// environment, for the pane to have sourced it: "zellij run" returns the
+// moment the pane exists, and whoever owns the env FIFO's directory must not
+// take it away before the payload has read it. A failure is decorated with the
+// command that produced it and everything it printed, which is the only trace
+// a pane that never appeared leaves.
+func (l *Launcher) Wait() error {
+	err := l.wait()
+	if l.env == nil {
+		return err
+	}
+	if err != nil {
+		// The launcher failed, so no pane is coming for the environment; the
+		// delivery is ended rather than sat out, and the launcher's error is the
+		// one that explains the launch.
+		l.cancelEnv()
+	}
+	if derr := l.env(); err == nil {
+		err = derr
+	}
+	return err
+}
+
+// deliverEnv starts the environment delivery: script is written into the FIFO
+// at path once the pane opens its reading end, and Wait joins the outcome. ctx
+// ending or timeout running out abandons a delivery whose pane never came.
+func (l *Launcher) deliverEnv(
+	ctx context.Context,
+	path, script string,
+	timeout time.Duration,
+) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	l.cancelEnv = cancel
+	g := new(errgroup.Group)
+	g.Go(func() error { return writeEnvFifo(ctx, path, script, timeout) })
+	l.env = sync.OnceValue(func() error {
+		defer cancel()
+		return g.Wait()
+	})
+}
+
+// writeEnvFifo is the delivering half of the payload's ". env" gate. Closing
+// the FIFO is what ends the sourcing, so a close that fails is an environment
+// the pane may wait on forever, and reported like the write.
+func writeEnvFifo(ctx context.Context, path, script string, timeout time.Duration) error {
+	f, err := fifo.OpenWriter(ctx, path, timeout)
+	if err != nil {
+		return fmt.Errorf("delivering the popup environment: %w", err)
+	}
+	stop := context.AfterFunc(ctx, func() { _ = f.SetWriteDeadline(time.Now()) })
+	defer stop()
+	_, err = f.WriteString(script)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return fmt.Errorf("delivering the popup environment: %w", err)
+	}
+	return nil
+}
 
 func (l *Launcher) reap() error {
 	err := l.cmd.Wait()
@@ -134,7 +200,9 @@ func (l *Launcher) Dismiss(ctx context.Context) error {
 // waitBounded waits for the launcher to exit, giving up when ctx does. Only the
 // bound is reported: how the launcher itself exited says nothing about whether
 // the pane it created is still there — an interrupted one may well have printed
-// the id of a pane that outlives it.
+// the id of a pane that outlives it. The env delivery is deliberately not
+// joined: this wait fronts a dismissal, and the pane being closed may be
+// exactly the one that never came for its environment.
 //
 // The goroutine outlives a bound that ran out, and has to: a wait cannot be
 // taken back, and this one ends when the launcher does.
@@ -142,7 +210,7 @@ func (l *Launcher) waitBounded(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = l.Wait()
+		_ = l.wait()
 	}()
 	select {
 	case <-done:

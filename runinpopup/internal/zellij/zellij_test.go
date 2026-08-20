@@ -1,8 +1,6 @@
 package zellij
 
 import (
-	"os"
-	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -94,14 +92,15 @@ func TestClient_RunCommand_partialGeometry(t *testing.T) {
 	})
 }
 
-// The environment reaches the pane by being sourced: the argv names the file
-// and nothing of what is in it.
-func TestClient_RunCommand_envFileIsSourced(t *testing.T) {
+// The environment reaches the pane by being sourced: the argv names the env
+// FIFO and nothing of what will travel over it.
+func TestClient_RunCommand_envIsSourced(t *testing.T) {
 	c := testClient()
 
 	path, args := c.RunCommand(RunRequest{
 		SessionId: "session-id",
-		EnvFile:   "/tmp/popup/env",
+		Env:       map[string]string{"KEY": "value"},
+		WorkDir:   "/tmp/popup",
 		Command:   []string{"env"},
 	})
 	assertCommand(t, path, args, "/usr/bin/zellij", []string{
@@ -120,9 +119,10 @@ func TestClient_RunCommand_envFileIsSourced(t *testing.T) {
 // The group is what makes the gate cover a whole script: without it the "&&"
 // would bind to the script's first command only, and the rest would run in the
 // environment the sourcing failed to set.
-func TestClient_RunCommand_envFileGatesTheWholeScript(t *testing.T) {
+func TestClient_RunCommand_envGatesTheWholeScript(t *testing.T) {
 	_, args := New(Options{}).RunCommand(RunRequest{
-		EnvFile: "/tmp/popup/env",
+		Env:     map[string]string{"KEY": "value"},
+		WorkDir: "/tmp/popup",
 		Script:  "echo one; echo two",
 	})
 	if got, want := args[len(args)-1], ". '/tmp/popup/env' && { echo one; echo two\n}"; got != want {
@@ -204,40 +204,19 @@ func TestParsePaneId(t *testing.T) {
 	}
 }
 
-func TestWriteEnvFile(t *testing.T) {
-	dir := t.TempDir()
-
-	path, err := WriteEnvFile(dir, map[string]string{
+func TestEnvScript(t *testing.T) {
+	got := envScript(map[string]string{
 		"B":       "two",
 		"A":       "it's one",
 		"HOSTILE": "$(id) `id` \"; rm -rf /",
 	})
-	if err != nil {
-		t.Fatalf("WriteEnvFile: %v", err)
-	}
-	if want := filepath.Join(dir, "env"); path != want {
-		t.Errorf("path = %q, want %q", path, want)
-	}
-
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading the env file: %v", err)
-	}
 	// Sorted, one export per line, every value a single quoted word: what the
 	// popup's shell reads in must be the values and nothing the shell would act
 	// on itself.
 	want := "export A='it'\\''s one'\n" +
 		"export B='two'\n" +
 		"export HOSTILE='$(id) `id` \"; rm -rf /'\n"
-	if string(got) != want {
-		t.Errorf("env file =\n\t%q\nwant\n\t%q", got, want)
-	}
-
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("mode = %o, want 600: the file is what keeps the values private", perm)
+	if got != want {
+		t.Errorf("env script =\n\t%q\nwant\n\t%q", got, want)
 	}
 }

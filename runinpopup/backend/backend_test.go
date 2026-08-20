@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -337,10 +336,10 @@ func TestZellij_Launch_ttyHandshake(t *testing.T) {
 	})
 }
 
-// The environment is what a "zellij run" argv must not carry: it lands in the
-// launch's work directory instead, and the command line names only the file the
-// payload sources.
-func TestZellij_Launch_envGoesToAWorkDirFile(t *testing.T) {
+// The environment is what a "zellij run" argv must not carry: it travels over
+// a FIFO in the launch's work directory instead, and the command line names
+// only the FIFO the payload sources.
+func TestZellij_Launch_envTravelsOverAWorkDirFifo(t *testing.T) {
 	b := zellijBackend(t)
 	dir := t.TempDir()
 
@@ -354,15 +353,6 @@ func TestZellij_Launch_envGoesToAWorkDirFile(t *testing.T) {
 		t.Fatalf("runRequest: %v", err)
 	}
 
-	envFile := filepath.Join(dir, "env")
-	content, err := os.ReadFile(envFile)
-	if err != nil {
-		t.Fatalf("reading the env file: %v", err)
-	}
-	if want := "export A='it'\\''s one'\nexport B='two'\n"; string(content) != want {
-		t.Errorf("env file =\n\t%q\nwant\n\t%q", content, want)
-	}
-
 	path, args := b.zellij.RunCommand(req)
 	assertCommand(t, path, args, "/usr/bin/zellij", []string{
 		"--session=session-id",
@@ -374,7 +364,7 @@ func TestZellij_Launch_envGoesToAWorkDirFile(t *testing.T) {
 		"--",
 		"/bin/bash",
 		"-c",
-		". '" + envFile + "' && { 'vim' 'my file.txt'\n}",
+		". '" + filepath.Join(dir, "env") + "' && { 'vim' 'my file.txt'\n}",
 	})
 	for _, arg := range args {
 		if strings.Contains(arg, "it's one") {

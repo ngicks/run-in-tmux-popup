@@ -192,3 +192,22 @@ closes it. For the two early-exit launchers the id is parsed from the
 launcher's captured output after its Wait — never concurrently, so the
 output-buffer race stays fixed. Live confirmation of the close
 commands' end-to-end effect belongs to the tagged integration suite.
+
+## The zellij env travels over a FIFO whose delivery the launcher's Wait joins (review fix, 2026-08-21)
+
+Amends "Env travels via a sourced env file" above, after adversarial
+review found the file racy: "zellij run" returns the moment the pane
+exists, so a no-stream launch's workspace — the env file inside it —
+could be removed before the pane ever sourced it. The env stays in the
+workspace and the payload still sources it gated by "&&", but the path
+now names a mode-0600 FIFO rather than a file: the zellij client
+delivers the rendered exports into it once the pane opens its reading
+end, and the launcher's Wait joins that delivery, bounded by the
+launch's startup timeout (LaunchSpec grows the field). The sourcing
+rendezvous is thus what holds the launch — and the workspace — open
+until the payload has its environment; a launcher that failed cancels
+the delivery instead of sitting it out, and a dismissal deliberately
+waits on the raw reap only, since the pane being closed may be exactly
+the one that never came. Rejected: a grace-period delay before
+workspace removal (still racy), and an env file with its own lifetime
+outside the workspace (leaks when the pane never runs).

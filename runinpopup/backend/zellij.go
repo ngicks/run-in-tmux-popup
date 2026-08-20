@@ -54,37 +54,31 @@ func (b *Zellij) Launch(
 // runRequest completes the launch into a zellij run, placing what does not fit
 // in the argv beside it: "zellij run" has no environment flag, and an argv is
 // readable by every process for as long as the pane lives, so an environment is
-// written into the launch's work directory and sourced by the payload. The file
-// goes away with the directory, so there is nothing to undo for a run that is
-// never started.
+// delivered over a FIFO in the launch's work directory and sourced by the
+// payload — the zellij client owns that delivery, since it also owns the
+// launcher whose Wait has to join it.
 func (b *Zellij) runRequest(spec runinpopup.LaunchSpec) (zellij.RunRequest, error) {
 	if err := rejectTmuxPositions(spec); err != nil {
 		return zellij.RunRequest{}, err
 	}
-	req := zellij.RunRequest{
-		SessionId: b.sessionId,
-		Title:     spec.Title,
-		X:         spec.X,
-		Y:         spec.Y,
-		Width:     spec.Width,
-		Height:    spec.Height,
-		Command:   spec.Command,
-		Script:    spec.Script,
-	}
-	if len(spec.Env) == 0 {
-		return req, nil
-	}
-	if spec.WorkDir == "" {
+	if len(spec.Env) > 0 && spec.WorkDir == "" {
 		return zellij.RunRequest{}, errors.New(
-			"the launch has no work directory to write the popup environment into",
+			"the launch has no work directory to deliver the popup environment in",
 		)
 	}
-	envFile, err := zellij.WriteEnvFile(spec.WorkDir, spec.Env)
-	if err != nil {
-		return zellij.RunRequest{}, err
-	}
-	req.EnvFile = envFile
-	return req, nil
+	return zellij.RunRequest{
+		SessionId:      b.sessionId,
+		Title:          spec.Title,
+		Env:            spec.Env,
+		WorkDir:        spec.WorkDir,
+		StartupTimeout: spec.StartupTimeout,
+		X:              spec.X,
+		Y:              spec.Y,
+		Width:          spec.Width,
+		Height:         spec.Height,
+		Command:        spec.Command,
+		Script:         spec.Script,
+	}, nil
 }
 
 // rejectTmuxPositions refuses the popup positions zellij cannot express. Cells

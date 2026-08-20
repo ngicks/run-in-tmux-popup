@@ -9,8 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/fifo"
 )
 
 // TTYHandshake is how one backend's popup announces the terminal it runs on.
@@ -80,8 +81,8 @@ func (h *popupTTYHandshake) acquire(ctx context.Context) (string, error) {
 	// on the dismissal are the payload's first two acts, and a FIFO that is not
 	// there yet fails the payload instead of making it wait.
 	for _, s := range []string{ttyFifo, doneFifo} {
-		if err := syscall.Mknod(s, syscall.S_IFIFO|0o600, 0); err != nil {
-			return "", fmt.Errorf("creating fifo %q: %w", s, err)
+		if err := fifo.Mkfifo(s); err != nil {
+			return "", err
 		}
 	}
 

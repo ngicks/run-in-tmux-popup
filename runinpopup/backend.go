@@ -3,6 +3,7 @@ package runinpopup
 import (
 	"context"
 	"io"
+	"time"
 )
 
 // PopupSpec is the payload a popup runs: what to execute, with which
@@ -76,12 +77,22 @@ type LaunchSpec struct {
 	Command             []string
 	Script              string
 
+	// StartupTimeout bounds how long the popup has to reach its payload. It is
+	// the same bound the launch layer holds its FIFO rendezvous to, handed down
+	// so a backend needing a rendezvous of its own — zellij's environment
+	// delivery — answers to one clock. Always set by the launch layer.
+	StartupTimeout time.Duration
+
 	// WorkDir is the launch's private mode-0700 scratch directory, present
 	// whenever the launch has one: it already holds the payload FIFOs named in
-	// the command line above, and a backend needing a file of its own — an
-	// environment its multiplexer has no flag for, say — puts it here. The
-	// launch gives the directory back when it is over, so nothing written into
-	// it needs a lifetime of its own.
+	// the command line above, and a backend needing a file of its own puts it
+	// here. The launch gives the directory back when it is over — which, on a
+	// mechanism whose launcher returns at pane creation, can be before the
+	// payload has started. So whatever the payload must still find here needs a
+	// rendezvous holding the launch open until the payload has it: the payload
+	// FIFOs have theirs by construction, and a backend adding a startup file of
+	// its own arranges its own — zellij delivers its environment over a FIFO
+	// whose delivery its handle's Wait joins.
 	WorkDir string
 
 	// Stdin, Stdout and Stderr are the endpoints the payload's streams of those

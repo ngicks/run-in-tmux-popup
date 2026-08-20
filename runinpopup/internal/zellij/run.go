@@ -1,14 +1,16 @@
 package zellij
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/fifo"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/shellargv"
 )
 
@@ -20,12 +22,22 @@ type RunRequest struct {
 	SessionId string
 	// Title names the pane (--name). Empty leaves zellij's default.
 	Title string
-	// EnvFile is a shell file the payload sources before it runs, holding the
-	// pane's environment. zellij has no environment flag of its own, and an argv
-	// is readable by every process for as long as the pane lives, so the values
-	// travel in a file — WriteEnvFile writes one — and only its path is on the
-	// command line.
-	EnvFile string
+	// Env is the pane's environment. zellij has no environment flag of its own,
+	// and an argv is readable by every process for as long as the pane lives, so
+	// the values travel over a FIFO in WorkDir that the payload sources before
+	// it runs; only the FIFO's path is on the command line. A FIFO rather than a
+	// file because "zellij run" returns the moment the pane exists, long before
+	// the pane sources anything, while WorkDir lives only as long as the launch:
+	// the delivery is the rendezvous that keeps the launch — whose Wait joins it
+	// — open until the payload has its environment.
+	Env map[string]string
+	// WorkDir is the launch's work directory, holding the env FIFO. Required
+	// when Env is set; the caller checks, since it is the caller that knows
+	// whether a launch has one.
+	WorkDir string
+	// StartupTimeout bounds the env delivery rendezvous — how long the pane has
+	// to open its end of the FIFO. Zero means 30s.
+	StartupTimeout time.Duration
 	// X, Y, Width and Height place and size the floating pane (--x, --y, --width,
 	// --height). zellij takes a bare number of cells or a percentage, and nothing
 	// else: the single-letter positions tmux understands have no equivalent here
@@ -59,12 +71,25 @@ func (c *Client) RunCommand(req RunRequest) (path string, args []string) {
 
 // StartRun runs RunCommand's argv. "zellij run" returns as soon as the floating
 // pane exists, so its launcher says nothing about the payload still running in
-// it.
+// it — except when the request carries an environment, whose delivery the
+// launcher's Wait then joins: the pane sourcing the env FIFO is the one point
+// the payload's startup can be waited on at all.
 func (c *Client) StartRun(ctx context.Context, req RunRequest) (*Launcher, error) {
 	_, args := c.RunCommand(req)
+	if len(req.Env) > 0 {
+		// Created before the pane so the payload cannot find it missing, removed
+		// with the WorkDir it lives in.
+		if err := fifo.Mkfifo(envPath(req.WorkDir)); err != nil {
+			return nil, err
+		}
+	}
 	l, err := c.start(ctx, args)
 	if err != nil {
 		return nil, err
+	}
+	if len(req.Env) > 0 {
+		l.deliverEnv(ctx, envPath(req.WorkDir), envScript(req.Env),
+			cmp.Or(req.StartupTimeout, defaultEnvDeliveryTimeout))
 	}
 	l.close = func(ctx context.Context) error { return c.closePane(ctx, req.SessionId, l) }
 	return l, nil
@@ -131,43 +156,44 @@ func (c *Client) ClosePane(ctx context.Context, sessionId, paneId string) error 
 // script payload — or an environment, which only a shell can read in — is
 // wrapped in a shell.
 func (c *Client) payload(req RunRequest) []string {
-	if req.Script == "" && req.EnvFile == "" {
+	if req.Script == "" && len(req.Env) == 0 {
 		return slices.Clone(req.Command)
 	}
 	line := commandLine(req.Command, req.Script)
-	if req.EnvFile != "" {
+	if len(req.Env) > 0 {
 		// A pane that could not read its environment must not run the payload
 		// without it, hence "&&" rather than the ";" an inline export would take;
 		// the payload is grouped so that the gate covers all of it and not just
 		// the first command of a Script. The newline is what makes the closing
 		// brace a command of its own, whatever the payload ends with.
-		line = fmt.Sprintf(". %s && { %s\n}", shellargv.Quote(req.EnvFile), line)
+		line = fmt.Sprintf(". %s && { %s\n}", shellargv.Quote(envPath(req.WorkDir)), line)
 	}
 	return []string{c.shell, "-c", line}
 }
 
-// envFileName is what WriteEnvFile calls its file. The work directory it lands
+// envFifoName is what the delivery calls its FIFO. The work directory it lands
 // in also holds the launch's payload FIFOs and, during a pinentry exchange, the
 // handshake ones, so the name stays clear of all of theirs.
-const envFileName = "env"
+const envFifoName = "env"
 
-// WriteEnvFile writes env as a shell file in dir and returns its path, for
-// RunRequest.EnvFile. It is the counterpart of the sourcing payload renders:
-// where a multiplexer has no environment flag, this is how the values reach the
-// pane without passing through an argv.
-//
-// The file is mode 0600 — it exists to keep the values off a command line every
-// process can read, and would be no improvement if it were readable too.
-func WriteEnvFile(dir string, env map[string]string) (string, error) {
+// defaultEnvDeliveryTimeout mirrors the launch layer's default startup bound,
+// for a RunRequest that set none of its own.
+const defaultEnvDeliveryTimeout = 30 * time.Second
+
+// envPath names the env FIFO a request's payload sources.
+func envPath(workDir string) string {
+	return filepath.Join(workDir, envFifoName)
+}
+
+// envScript renders env as the shell input the payload sources: where a
+// multiplexer has no environment flag, this is how the values reach the pane
+// without passing through an argv every process can read.
+func envScript(env map[string]string) string {
 	var sb strings.Builder
 	for _, k := range slices.Sorted(maps.Keys(env)) {
 		fmt.Fprintf(&sb, "export %s=%s\n", k, shellargv.Quote(env[k]))
 	}
-	path := filepath.Join(dir, envFileName)
-	if err := os.WriteFile(path, []byte(sb.String()), 0o600); err != nil {
-		return "", fmt.Errorf("writing the popup environment: %w", err)
-	}
-	return path, nil
+	return sb.String()
 }
 
 // geometryArgs renders a pane's placement and size as "zellij run" flags, in

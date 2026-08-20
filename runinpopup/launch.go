@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/fifo"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/shellargv"
 )
 
@@ -31,11 +32,6 @@ const (
 	// defaultWorkspacePrefix names the directories this package creates in
 	// os.TempDir() after the binary they belong to.
 	defaultWorkspacePrefix = "run-in-popup-"
-	// fifoOpenRetryInterval paces the wait for the payload's read end. Only the
-	// write side needs it: opening a FIFO for reading can block until the peer
-	// arrives, opening it for writing cannot without wedging on a peer that never
-	// comes.
-	fifoOpenRetryInterval = 20 * time.Millisecond
 	// popupDismissTimeout bounds closing the popup of a canceled launch. It is
 	// this generous because a dismissal may first have to sit out the launcher it
 	// reads a pane id from: the same cancellation interrupts that launcher, and
@@ -250,23 +246,25 @@ func (l *PopupLauncher) Exec(
 		workDir = dir
 		for _, s := range set {
 			s.path = filepath.Join(dir, s.name)
-			if err := syscall.Mknod(s.path, syscall.S_IFIFO|0o600, 0); err != nil {
-				return nil, fmt.Errorf("creating fifo %q: %w", s.path, err)
+			if err := fifo.Mkfifo(s.path); err != nil {
+				return nil, err
 			}
 		}
 	}
 
+	startupTimeout := cmp.Or(l.StartupTimeout, defaultPopupStartupTimeout)
 	command, script := launchCommandLine(spec, set)
 	launchSpec := LaunchSpec{
-		Title:   spec.Title,
-		Env:     spec.Env,
-		X:       spec.X,
-		Y:       spec.Y,
-		Width:   spec.Width,
-		Height:  spec.Height,
-		Command: command,
-		Script:  script,
-		WorkDir: workDir,
+		Title:          spec.Title,
+		Env:            spec.Env,
+		X:              spec.X,
+		Y:              spec.Y,
+		Width:          spec.Width,
+		Height:         spec.Height,
+		Command:        command,
+		Script:         script,
+		WorkDir:        workDir,
+		StartupTimeout: startupTimeout,
 	}
 	for _, s := range set {
 		s.wire(&launchSpec)
@@ -313,7 +311,6 @@ func (l *PopupLauncher) Exec(
 	})
 	stopDismiss := context.AfterFunc(ctx, dismiss)
 
-	startupTimeout := cmp.Or(l.StartupTimeout, defaultPopupStartupTimeout)
 	cmd := &PopupCommand{
 		endpoints:  new(errgroup.Group),
 		piped:      new(errgroup.Group),
@@ -624,7 +621,7 @@ func (s *popupStream) pumpOut(ctx context.Context, startupTimeout time.Duration)
 		}
 	}()
 
-	f, err := openFifoReader(ctx, s.path, startupTimeout)
+	f, err := fifo.OpenReader(ctx, s.path, startupTimeout)
 	if err != nil {
 		return err
 	}
@@ -656,7 +653,7 @@ func (s *popupStream) pumpIn(ctx context.Context, startupTimeout time.Duration) 
 		}
 	}()
 
-	f, err := openFifoWriter(ctx, s.path, startupTimeout)
+	f, err := fifo.OpenWriter(ctx, s.path, startupTimeout)
 	if err != nil {
 		return err
 	}
@@ -686,87 +683,6 @@ func (s *popupStream) closeDst(cause error) error {
 		return s.pipe.CloseWithError(cause)
 	}
 	return s.dst.Close()
-}
-
-// openFifoReader opens the read end of a payload FIFO. The open blocks until the
-// payload opens its write end, which is what makes it the rendezvous — and what
-// means only ctx or startupTimeout can end it when the payload never arrives. A
-// blocked open is woken by opening the same FIFO read-write, which succeeds with
-// nobody on the other side.
-func openFifoReader(
-	ctx context.Context,
-	path string,
-	startupTimeout time.Duration,
-) (*os.File, error) {
-	type opened struct {
-		f   *os.File
-		err error
-	}
-	ch := make(chan opened, 1)
-	go func() {
-		f, err := os.OpenFile(path, os.O_RDONLY, 0)
-		ch <- opened{f, err}
-	}()
-
-	var abort error
-	select {
-	case o := <-ch:
-		if o.err != nil {
-			return nil, fmt.Errorf("opening fifo %q: %w", path, o.err)
-		}
-		return o.f, nil
-	case <-time.After(startupTimeout):
-		abort = fifoStartupError(path, startupTimeout)
-	case <-ctx.Done():
-		abort = context.Cause(ctx)
-	}
-
-	wake, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		// Nothing left to try: the open stays blocked until something else opens
-		// the fifo, and its goroutine with it.
-		return nil, abort
-	}
-	defer wake.Close()
-	if o := <-ch; o.f != nil {
-		o.f.Close()
-	}
-	return nil, abort
-}
-
-// openFifoWriter opens the write end of a payload FIFO. O_NONBLOCK because the
-// blocking form would wedge here forever when the payload never reads; ENXIO is
-// exactly the "no reader yet" case, so it is the one retried.
-func openFifoWriter(
-	ctx context.Context,
-	path string,
-	startupTimeout time.Duration,
-) (*os.File, error) {
-	deadline := time.Now().Add(startupTimeout)
-	for {
-		f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
-		if err == nil {
-			return f, nil
-		}
-		if !errors.Is(err, syscall.ENXIO) {
-			return nil, fmt.Errorf("opening fifo %q: %w", path, err)
-		}
-		if time.Now().After(deadline) {
-			return nil, fifoStartupError(path, startupTimeout)
-		}
-		select {
-		case <-ctx.Done():
-			return nil, context.Cause(ctx)
-		case <-time.After(fifoOpenRetryInterval):
-		}
-	}
-}
-
-func fifoStartupError(path string, startupTimeout time.Duration) error {
-	return fmt.Errorf(
-		"the popup did not reach its payload within %v: nothing opened %q",
-		startupTimeout, path,
-	)
 }
 
 func loggerOrDiscard(logger *slog.Logger) *slog.Logger {
