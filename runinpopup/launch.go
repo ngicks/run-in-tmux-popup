@@ -48,8 +48,12 @@ const (
 // whatever the backend puts beside them.
 type WorkspaceOptions struct {
 	// Dir, when non-empty, is the work directory holding the FIFOs; the caller
-	// owns its lifetime and the launch never removes it. Empty means the launch
-	// creates a mode-0700 directory under os.TempDir() and removes it on
+	// owns its lifetime and the launch never removes it. It must be a directory
+	// owned by the calling user and writable by nobody else, and a launch
+	// refuses one that is not: whoever can write the directory can replace a
+	// FIFO in it with one of their own, and the pinentry handshake reads the
+	// terminal that gets the passphrase prompt off such a FIFO. Empty means the
+	// launch creates a mode-0700 directory under os.TempDir() and removes it on
 	// completion.
 	Dir string
 	// NamePrefix prefixes the name of a launch-created directory. Empty means
@@ -64,6 +68,9 @@ type WorkspaceOptions struct {
 // open returns the work directory and the func giving it back.
 func (o WorkspaceOptions) open(logger *slog.Logger) (dir string, release func(), err error) {
 	if o.Dir != "" {
+		if err := checkWorkspace(o.Dir); err != nil {
+			return "", nil, err
+		}
 		return o.Dir, func() {}, nil
 	}
 	dir, err = os.MkdirTemp("", cmp.Or(o.NamePrefix, defaultWorkspacePrefix))
@@ -79,6 +86,30 @@ func (o WorkspaceOptions) open(logger *slog.Logger) (dir string, release func(),
 			logger.Warn("removing the popup workspace failed", slog.Any("err", err))
 		}
 	}, nil
+}
+
+// checkWorkspace enforces WorkspaceOptions.Dir's ownership and permission
+// contract on a caller-provided directory; a launch-created one is born mode
+// 0700 and needs no checking. The directory itself is all that is looked at:
+// its ancestors are commonly sticky world-writable temp directories, where a
+// FIFO cannot be replaced by anyone but its owner.
+func checkWorkspace(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("checking the popup workspace: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("popup workspace %q is not a directory", dir)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != os.Geteuid() {
+		return fmt.Errorf("popup workspace %q is not owned by this user", dir)
+	}
+	if perm := info.Mode().Perm(); perm&0o022 != 0 {
+		return fmt.Errorf(
+			"popup workspace %q is writable by other users (mode %04o)", dir, perm,
+		)
+	}
+	return nil
 }
 
 // PopupStreams is the payload's stdio endpoint set, passed per launch rather
