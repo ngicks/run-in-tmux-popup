@@ -145,3 +145,15 @@ flags --x, --y, -w/--width and --height (no -h shorthand — cobra
 reserves it for --help). Config keys and the pinentry surface are
 deferred. Rejected: an anchor+offset abstraction; raw per-backend
 pass-through fields.
+
+## Amendment: the fork's new-pane geometry flags differ (verified 2026-08-20)
+
+The geometry entry above assumed new-pane mirrors display-popup's
+flags; probing the actual tmux 3.7b fork (`list-commands` on a private
+server in this environment) disproved it. new-pane takes `-x width`,
+`-y height`, `-X x-position`, `-Y y-position` — lowercase x/y are SIZE
+there, position is uppercase — while display-popup keeps `-x/-y`
+position and `-w/-h` size. The floating-pane backend therefore maps
+Width→-x, Height→-y, X→-X, Y→-Y. Whether -X/-Y accept the same
+position specifiers as display-popup remains for the tagged
+integration suite to confirm.
