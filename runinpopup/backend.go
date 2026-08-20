@@ -99,9 +99,10 @@ type LaunchSpec struct {
 	Stderr io.WriteCloser
 }
 
-// PopupHandle is a launched popup, waited on by whoever launched it. It is
-// deliberately wait-only: connecting a payload's stdio is the same work for
-// every mechanism, so it lives in the launch layer instead of in each backend.
+// PopupHandle is a launched popup: whoever launched it waits on it, and closes
+// it when the launch is given up on. Nothing else is on it — connecting a
+// payload's stdio is the same work for every mechanism, so it lives in the
+// launch layer instead of in each backend.
 type PopupHandle interface {
 	// Wait waits for the popup launcher to exit and reports why it failed.
 	//
@@ -109,6 +110,27 @@ type PopupHandle interface {
 	// stays for as long as the popup, but the floating-pane mechanisms return as
 	// soon as the pane exists.
 	Wait() error
+	// Dismiss closes the popup and whatever is running inside it.
+	//
+	// It is what canceling a launch has to mean. The launcher process is not the
+	// popup: interrupting it detaches the client that was displaying one, or
+	// reaps a command that returned the moment the pane existed, and either way
+	// the popup and the payload in it stay where they were. So the popup is
+	// closed through the multiplexer itself.
+	//
+	// ctx bounds the dismissal and is never the launch's own context — that one
+	// is canceled by the time a dismissal is wanted, and a close command
+	// inheriting it would never reach the multiplexer.
+	//
+	// Whoever asks for this is already giving up on the launch, so it is answered
+	// best-effort. It is done once per handle however often it is called, and the
+	// popup being gone already is nothing this package invents an error for —
+	// though a multiplexer that complains it cannot find what it was asked to
+	// close is reported as it answered, as is a dismissal that could not be
+	// carried out at all: a multiplexer that could not be reached, or a popup
+	// whose id never arrived to name it. Callers log what comes back rather than
+	// failing on it; the launch is ending on its own cancellation, not on this.
+	Dismiss(ctx context.Context) error
 }
 
 // Backend opens a popup in a terminal multiplexer. Implementations hold the
@@ -118,8 +140,9 @@ type Backend interface {
 	// Name reports the backend's name, one of the names defined by the backend
 	// package.
 	Name() string
-	// Launch opens a popup running spec and returns a handle on the launcher.
-	// Canceling ctx dismisses the popup.
+	// Launch opens a popup running spec and returns the handle on it. Canceling
+	// ctx tears the launcher down; closing the popup itself is the handle's
+	// Dismiss, which is what the launch layer calls on a canceled launch.
 	Launch(ctx context.Context, spec LaunchSpec) (PopupHandle, error)
 	// Prepare adjusts multiplexer state that would break — or crash — popup
 	// creation, and returns a func restoring that state once the popup is gone.

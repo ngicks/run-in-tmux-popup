@@ -262,6 +262,7 @@ func TestTmuxFloatingPane_Launch_ttyHandshake(t *testing.T) {
 	assertCommand(t, path, args, "/usr/bin/tmux", []string{
 		"new-pane",
 		"-t", "work",
+		"-P", "-F", "#{pane_id}",
 		"-e", "DONE_FIFO_FILE=/tmp/popup/done",
 		"-e", "TTY_FIFO_FILE=/tmp/popup/tty",
 		"--", "echo $(tty) >> ${TTY_FIFO_FILE}" +
@@ -297,6 +298,7 @@ func TestTmuxFloatingPane_Launch_geometry(t *testing.T) {
 	assertCommand(t, path, args, "/usr/bin/tmux", []string{
 		"new-pane",
 		"-t", "work",
+		"-P", "-F", "#{pane_id}",
 		"-X", "C",
 		"-Y", "10",
 		"-x", "80%",

@@ -64,6 +64,17 @@ type popupShellHandle struct{ cmd *exec.Cmd }
 
 func (h popupShellHandle) Wait() error { return h.cmd.Wait() }
 
+// Dismiss closes the popup the way a multiplexer does: the whole group goes,
+// command included, which is what ends the streams the bridge is waiting on.
+// A group that is already gone is nothing to report — the popup closed itself.
+func (h popupShellHandle) Dismiss(context.Context) error {
+	if err := syscall.Kill(-h.cmd.Process.Pid, syscall.SIGKILL); err != nil &&
+		!errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return nil
+}
+
 // popupOutput stands in for one of this process's own output streams: it takes
 // what the popup writes, remembers having been closed, and says when the first
 // byte arrived so a test can act while the command is still running.

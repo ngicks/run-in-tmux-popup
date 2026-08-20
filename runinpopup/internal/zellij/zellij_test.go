@@ -148,6 +148,62 @@ func TestClient_RunCommand_scriptGoesThroughShell(t *testing.T) {
 	})
 }
 
+// A pane is closed by the id "zellij run" reported for it, in the session that
+// run named: the id means nothing without it.
+func TestClient_ClosePaneCommand(t *testing.T) {
+	c := testClient()
+
+	path, args := c.ClosePaneCommand("session-id", "terminal_3")
+	assertCommand(t, path, args, "/usr/bin/zellij", []string{
+		"--session=session-id",
+		"action",
+		"close-pane",
+		"--pane-id=terminal_3",
+	})
+}
+
+func TestClient_ClosePaneCommand_noSession(t *testing.T) {
+	path, args := New(Options{}).ClosePaneCommand("", "terminal_3")
+	assertCommand(t, path, args, "zellij", []string{
+		"action",
+		"close-pane",
+		"--pane-id=terminal_3",
+	})
+}
+
+// The launcher's output is all there is to find the pane in. Whatever zellij
+// prints around the id changes nothing; output without one means no pane was
+// created — or that the launcher was interrupted before it could say — and
+// there is nothing to close.
+func TestParsePaneId(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+		want string
+	}{
+		{name: "the id alone", out: "terminal_1\n", want: "terminal_1"},
+		{name: "no trailing newline", out: "terminal_42", want: "terminal_42"},
+		{name: "a sentence around it", out: "Created pane ID: terminal_7\n", want: "terminal_7"},
+		{name: "the first id wins", out: "terminal_7 terminal_8\n", want: "terminal_7"},
+		{name: "nothing was printed", out: ""},
+		{name: "only whitespace", out: " \n"},
+		{name: "an error instead of an id", out: "No session named work found\n"},
+		{name: "the prefix without a number", out: "terminal_\n"},
+		{name: "another pane kind", out: "plugin_2\n"},
+		{name: "not a number", out: "terminal_1a\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parsePaneId(tc.out)
+			if ok != (tc.want != "") {
+				t.Fatalf("parsePaneId(%q) = %q, %t; want %q", tc.out, got, ok, tc.want)
+			}
+			if got != tc.want {
+				t.Errorf("parsePaneId(%q) = %q, want %q", tc.out, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWriteEnvFile(t *testing.T) {
 	dir := t.TempDir()
 

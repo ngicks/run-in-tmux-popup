@@ -2,8 +2,10 @@ package tmux
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/shellargv"
 )
@@ -53,7 +55,38 @@ func (c *Client) PopupCommand(req PopupRequest) (path string, args []string) {
 // popup does, so its launcher carries the payload's exit status.
 func (c *Client) StartPopup(ctx context.Context, req PopupRequest) (*Launcher, error) {
 	_, args := c.PopupCommand(req)
-	return c.start(ctx, args)
+	l, err := c.start(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	// Nothing has to be read back from the launcher to close this one: a popup is
+	// a client-side overlay and a client has at most one, so the client the launch
+	// named is the whole address.
+	l.close = func(ctx context.Context) error { return c.ClosePopup(ctx, req.ClientId) }
+	return l, nil
+}
+
+// ClosePopupCommand builds "tmux popup -C [-c <client>]", the display-popup
+// invocation that closes the popup showing on a client, per the usage line this
+// fork reports for it,
+//
+//	display-popup (popup) [-BCEkN] ... [-c target-client] ...
+//
+// Interrupting the launcher is not this: that only detaches the client the
+// launcher itself was, leaving the popup — and the payload in it — running.
+func (c *Client) ClosePopupCommand(clientId string) (path string, args []string) {
+	args = []string{"popup", "-C"}
+	if clientId != "" {
+		args = append(args, "-c", clientId)
+	}
+	return c.path, args
+}
+
+// ClosePopup closes the popup a matching StartPopup put on the client.
+func (c *Client) ClosePopup(ctx context.Context, clientId string) error {
+	_, args := c.ClosePopupCommand(clientId)
+	_, err := c.run(ctx, args...)
+	return err
 }
 
 // PaneRequest is a new-pane invocation. A floating pane belongs to a window
@@ -78,18 +111,35 @@ type PaneRequest struct {
 	Script string
 }
 
-// NewPaneCommand builds "tmux new-pane [-t <session>] [-X <x>] [-Y <y>]
-// [-x <width>] [-y <height>] [-e KEY=VALUE...] -- <command line>".
+// paneIdFormat is what new-pane is asked to print about the pane it created.
+// The id is the only address a floating pane has out here: the launcher exits
+// the moment the pane exists, so without it there would be nothing to name when
+// the pane has to be closed again.
+const paneIdFormat = "#{pane_id}"
+
+// NewPaneCommand builds "tmux new-pane [-t <session>] -P -F #{pane_id}
+// [-X <x>] [-Y <y>] [-x <width>] [-y <height>] [-e KEY=VALUE...]
+// -- <command line>".
 //
 // new-pane can execute an argv directly, but the payload is passed as a single
 // shell command line so Script payloads work unchanged; "--" then keeps a
 // payload starting with "-" from being read as flags, which display-popup's -E
 // does not need.
 //
+// -P -F is what puts the new pane's id on the launcher's stdout, per the usage
+// line this fork reports,
+//
+//	new-pane (newp) [-bdefhIklPvZ] ... [-F format] ... [-P] ...
+//
+// which is what KillPane is later given. That the fork prints it where the
+// launcher can read it is for the tagged integration suite to confirm against a
+// live server.
+//
 // -d is deliberately absent. It would leave the focus where it was, and a
 // passphrase typed into an unfocused popup goes to the pane underneath.
 func (c *Client) NewPaneCommand(req PaneRequest) (path string, args []string) {
 	args = targeted(req.SessionId, "new-pane")
+	args = append(args, "-P", "-F", paneIdFormat)
 	args = append(args, paneGeometryArgs(req.X, req.Y, req.Width, req.Height)...)
 	args = append(args, envArgs(req.Env)...)
 	args = append(args, "--", commandLine(req.Command, req.Script))
@@ -100,7 +150,63 @@ func (c *Client) NewPaneCommand(req PaneRequest) (path string, args []string) {
 // exists, so its launcher says nothing about the payload still running in it.
 func (c *Client) StartNewPane(ctx context.Context, req PaneRequest) (*Launcher, error) {
 	_, args := c.NewPaneCommand(req)
-	return c.start(ctx, args)
+	l, err := c.start(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	l.close = func(ctx context.Context) error { return c.closePane(ctx, l) }
+	return l, nil
+}
+
+// closePane closes the floating pane the launcher created. The id it is named by
+// is on the launcher's own stdout, so the launcher is waited on first — reading
+// those buffers beside a tmux still writing them is the race this waits out, not
+// merely a stale read.
+func (c *Client) closePane(ctx context.Context, l *Launcher) error {
+	if err := l.waitBounded(ctx); err != nil {
+		return fmt.Errorf("%s: waiting for the new pane's id: %w", l.line, err)
+	}
+	paneId, ok := parsePaneId(l.stdout.String())
+	if !ok {
+		return fmt.Errorf(
+			"%s: no pane id to close, the launcher printed %q",
+			l.line, strings.TrimSpace(l.stdout.String()+l.stderr.String()),
+		)
+	}
+	return c.KillPane(ctx, paneId)
+}
+
+// parsePaneId picks the pane id out of what "new-pane -P -F #{pane_id}"
+// printed: tmux names a pane "%<n>" and prints that alone, so output not shaped
+// like it is a launcher that never got as far as creating a pane.
+func parsePaneId(out string) (string, bool) {
+	id, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	id = strings.TrimSpace(id)
+	if len(id) < 2 || id[0] != '%' {
+		return "", false
+	}
+	if strings.ContainsFunc(id[1:], func(r rune) bool { return r < '0' || r > '9' }) {
+		return "", false
+	}
+	return id, true
+}
+
+// KillPaneCommand builds "tmux kill-pane -t <pane>", per the usage line this
+// fork reports for it,
+//
+//	kill-pane (killp) [-a] [-t target-pane]
+//
+// A floating pane is a pane: closing it is killing it, and it takes whatever
+// runs in it along.
+func (c *Client) KillPaneCommand(paneId string) (path string, args []string) {
+	return c.path, []string{"kill-pane", "-t", paneId}
+}
+
+// KillPane closes the pane, whether it floats or sits in the layout.
+func (c *Client) KillPane(ctx context.Context, paneId string) error {
+	_, args := c.KillPaneCommand(paneId)
+	_, err := c.run(ctx, args...)
+	return err
 }
 
 // popupGeometryArgs renders a popup's placement and size as display-popup's

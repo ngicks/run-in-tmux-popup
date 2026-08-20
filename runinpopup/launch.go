@@ -36,6 +36,12 @@ const (
 	// arrives, opening it for writing cannot without wedging on a peer that never
 	// comes.
 	fifoOpenRetryInterval = 20 * time.Millisecond
+	// popupDismissTimeout bounds closing the popup of a canceled launch. It is
+	// this generous because a dismissal may first have to sit out the launcher it
+	// reads a pane id from: the same cancellation interrupts that launcher, and
+	// the backends give an interrupted one a couple of seconds to go away before
+	// killing it.
+	popupDismissTimeout = 5 * time.Second
 )
 
 // WorkspaceOptions configures a launch's work directory: the payload FIFOs and
@@ -250,6 +256,32 @@ func (l *PopupLauncher) Exec(
 		return nil, fmt.Errorf("popup failed: %w", err)
 	}
 
+	// Canceling a launch closes its popup, rather than merely interrupting the
+	// launcher: the launcher process is not the popup, and interrupting it leaves
+	// tmux's display-popup — and the payload inside it — running while only the
+	// client displaying it goes away. The interrupt the cancellation also sends
+	// stays as the backstop for a dismissal that fails or never returns.
+	//
+	// The dismissal runs on a context of its own because the launch's is the very
+	// thing that was canceled, and bounded so a multiplexer that will not answer
+	// cannot hold the launch open. What it reports is logged: the launch is ending
+	// on its cancellation, not on this.
+	dismiss := sync.OnceFunc(func() {
+		dismissCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx),
+			popupDismissTimeout,
+		)
+		defer cancel()
+		if err := handle.Dismiss(dismissCtx); err != nil {
+			logger.Warn(
+				"dismissing the popup failed",
+				slog.String("backend", l.Backend.Name()),
+				slog.Any("err", err),
+			)
+		}
+	})
+	stopDismiss := context.AfterFunc(ctx, dismiss)
+
 	startupTimeout := cmp.Or(l.StartupTimeout, defaultPopupStartupTimeout)
 	cmd := &PopupCommand{
 		endpoints:  new(errgroup.Group),
@@ -269,6 +301,17 @@ func (l *PopupLauncher) Exec(
 	// be restored, and by then its exit is only wanted for the diagnostics it
 	// carries.
 	cmd.release = sync.OnceFunc(func() {
+		// Only a canceled launch is closed from here. One that ended on its own
+		// leaves the popup alone — exec's closes itself when the command exits, and
+		// the exchanges that outlive their launcher dismiss theirs the way their
+		// payload agreed to — and stopping the watch is also what keeps a
+		// cancellation arriving afterwards, when a caller's context is finally let
+		// go of, from closing a popup that is long gone. Losing that stop to a
+		// cancellation already under way is what the second half is for: whichever
+		// of the two noticed first, this returns with the popup dismissed.
+		if !stopDismiss() || ctx.Err() != nil {
+			dismiss()
+		}
 		cancelLaunch()
 		go func() {
 			if err := cmd.waitLauncher(); err != nil {

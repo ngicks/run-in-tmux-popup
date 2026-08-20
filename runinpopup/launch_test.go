@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,6 +74,16 @@ type shellHandle struct{ cmd *exec.Cmd }
 
 func (h shellHandle) Wait() error { return h.cmd.Wait() }
 
+// Dismiss stands in for closing the popup: a real one takes the payload with
+// it, and killing the shell it runs in is what that looks like here. A popup
+// that has already closed itself is nothing to report.
+func (h shellHandle) Dismiss(context.Context) error {
+	if err := h.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	return nil
+}
+
 // emptyPopupBackend opens a popup that never reaches its payload: its launcher
 // does its part and exits, but the command line wiring the payload's streams is
 // never run, so nothing opens their other end.
@@ -100,6 +111,9 @@ type failedHandle struct{ err error }
 
 func (h failedHandle) Wait() error { return h.err }
 
+// Dismiss has nothing to close: the mechanism never got as far as a popup.
+func (h failedHandle) Dismiss(context.Context) error { return nil }
+
 // detachedBackend is a floating-pane-style mechanism: its launcher returns as
 // soon as the popup exists, long before the payload running in it is done.
 type detachedBackend struct{ *shellBackend }
@@ -112,12 +126,17 @@ func (b *detachedBackend) Launch(ctx context.Context, spec LaunchSpec) (PopupHan
 	// The popup outlives the launcher this stands in for, so the process behind
 	// it is reaped on the side.
 	go func() { _ = handle.Wait() }()
-	return detachedHandle{}, nil
+	return detachedHandle{handle}, nil
 }
 
-type detachedHandle struct{}
+// detachedHandle is the launcher's half of such a mechanism: waiting on it says
+// nothing, while dismissing it still has to reach the popup the launcher left
+// behind.
+type detachedHandle struct{ popup PopupHandle }
 
 func (detachedHandle) Wait() error { return nil }
+
+func (h detachedHandle) Dismiss(ctx context.Context) error { return h.popup.Dismiss(ctx) }
 
 func (b *shellBackend) Prepare(context.Context) (func(context.Context) error, error) {
 	if b.prepareErr != nil {
@@ -585,6 +604,121 @@ func TestPopupLauncher_Exec_popupFailure(t *testing.T) {
 	}
 	if backend.restored != 1 {
 		t.Errorf("restored = %d, want the state restored even on failure", backend.restored)
+	}
+}
+
+// dismissalBackend records what its popups were asked to close, and on what
+// kind of context. Everything else is the shell fake's: the launch has to run
+// for real for the cancellation to reach it the way one does.
+type dismissalBackend struct {
+	*shellBackend
+	mu    sync.Mutex
+	calls []dismissal
+}
+
+// dismissal is one Dismiss call as the handle saw it.
+type dismissal struct {
+	// liveCtx is whether the context it arrived on was still usable — a
+	// dismissal handed the cancellation it answers to could not reach any
+	// multiplexer.
+	liveCtx bool
+	// bounded is whether that context carried a deadline, so a multiplexer that
+	// never answers cannot hold the launch open.
+	bounded bool
+}
+
+func (b *dismissalBackend) Launch(ctx context.Context, spec LaunchSpec) (PopupHandle, error) {
+	handle, err := b.shellBackend.Launch(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	return &dismissalHandle{PopupHandle: handle, backend: b}, nil
+}
+
+func (b *dismissalBackend) dismissals() []dismissal {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.calls)
+}
+
+type dismissalHandle struct {
+	PopupHandle
+	backend *dismissalBackend
+}
+
+func (h *dismissalHandle) Dismiss(ctx context.Context) error {
+	_, bounded := ctx.Deadline()
+	h.backend.mu.Lock()
+	h.backend.calls = append(
+		h.backend.calls,
+		dismissal{liveCtx: ctx.Err() == nil, bounded: bounded},
+	)
+	h.backend.mu.Unlock()
+	return h.PopupHandle.Dismiss(ctx)
+}
+
+// Canceling a launch closes its popup, which is the only thing that ends a
+// payload the launcher cannot reach: interrupting the launcher is a backstop,
+// not a dismissal. It happens once however many paths notice the cancellation,
+// and the popup is gone by the time the wait returns.
+func TestPopupLauncher_Exec_cancellationDismissesThePopup(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	backend := &dismissalBackend{shellBackend: &shellBackend{}}
+
+	popup, err := (&PopupLauncher{Backend: backend}).Exec(
+		ctx,
+		PopupSpec{Script: "sleep 30"},
+		PopupStreams{},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	cancel()
+	_ = popup.Wait()
+
+	got := backend.dismissals()
+	if len(got) != 1 {
+		t.Fatalf("the popup was dismissed %d times, want exactly once: %+v", len(got), got)
+	}
+	if !got[0].liveCtx {
+		t.Error("the dismissal was handed the cancellation it answers to and could not act")
+	}
+	if !got[0].bounded {
+		t.Error(
+			"the dismissal was unbounded: a multiplexer that never answers would hold the launch",
+		)
+	}
+}
+
+// A launch that ended on its own leaves the popup alone: exec's closes itself
+// when the command exits, and an exchange that outlives its launcher dismisses
+// its own. A context canceled afterwards — every caller's is, eventually —
+// must not reach back for a popup that is long gone.
+func TestPopupLauncher_Exec_normalCompletionDismissesNothing(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	backend := &dismissalBackend{shellBackend: &shellBackend{}}
+
+	popup, err := (&PopupLauncher{Backend: backend}).Exec(
+		ctx,
+		PopupSpec{Script: "true"},
+		PopupStreams{},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := popup.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if got := backend.dismissals(); len(got) != 0 {
+		t.Fatalf("the popup was dismissed %d times, want none: %+v", len(got), got)
+	}
+
+	cancel()
+	// Nothing here waits on the cancellation because nothing may act on it: the
+	// launch is over, and the popup's own end was the payload exiting.
+	if got := backend.dismissals(); len(got) != 0 {
+		t.Errorf("a canceled context reached back for a popup that was already gone: %+v", got)
 	}
 }
 

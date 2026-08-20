@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -96,19 +97,33 @@ func targeted(sessionId string, args ...string) []string {
 // on forever.
 const launcherWaitDelay = 2 * time.Second
 
-// Launcher is a running tmux command that opens a popup. Only its exit is of
-// interest: the payload draws on the popup, not on this process's terminal.
+// Launcher is a running tmux command that opens a popup, and the way to close
+// the popup it opened. Its own streams are of no interest to the payload, which
+// draws on the popup rather than on this process's terminal.
 type Launcher struct {
 	cmd  *exec.Cmd
 	line string
-	// The launcher's own output is diagnostics, reported only with a failure.
-	// The two streams are kept apart while tmux writes them and joined only in
-	// that error, where which descriptor carried a message says nothing.
+	// The launcher's own output is diagnostics, reported only with a failure —
+	// and, for the mechanism that prints the id of what it created, the one place
+	// that id is. The two streams are kept apart while tmux writes them and
+	// joined only in that error, where which descriptor carried a message says
+	// nothing.
 	stdout, stderr bytes.Buffer
+	// wait is memoized: a process can only be reaped once, while both the caller
+	// waiting on the launcher and a dismissal reading what it printed have to go
+	// through it.
+	wait func() error
+	// close closes the popup this launcher opened. It is set by whichever Start
+	// built the launcher: the command that opens a popup is not the command that
+	// closes one, and only the opener knows which mechanism was used.
+	close     func(context.Context) error
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // start runs a tmux command in the background, with the same environment the
-// queries carry. Canceling ctx interrupts it, which is how a popup is dismissed.
+// queries carry. Canceling ctx interrupts it, which tears the launcher down;
+// closing the popup it opened is Dismiss.
 func (c *Client) start(ctx context.Context, args []string) (*Launcher, error) {
 	l := &Launcher{line: c.path + " " + strings.Join(args, " ")}
 	cmd := exec.CommandContext(ctx, c.path, args...)
@@ -125,13 +140,16 @@ func (c *Client) start(ctx context.Context, args []string) (*Launcher, error) {
 		return nil, fmt.Errorf("%s: %w", l.line, err)
 	}
 	l.cmd = cmd
+	l.wait = sync.OnceValue(l.reap)
 	return l, nil
 }
 
 // Wait waits for the launcher to exit and decorates a failure with the command
 // that produced it and everything it printed — "no server running on ..." and
 // friends, which are the only trace a popup that never appeared leaves.
-func (l *Launcher) Wait() error {
+func (l *Launcher) Wait() error { return l.wait() }
+
+func (l *Launcher) reap() error {
 	err := l.cmd.Wait()
 	if err == nil {
 		return nil
@@ -141,6 +159,35 @@ func (l *Launcher) Wait() error {
 		err = fmt.Errorf("%w: %s", err, out)
 	}
 	return err
+}
+
+// Dismiss closes the popup this launcher opened, once per launcher: the close
+// command is the popup's end, and a second one could only be told the popup is
+// already gone.
+func (l *Launcher) Dismiss(ctx context.Context) error {
+	l.closeOnce.Do(func() { l.closeErr = l.close(ctx) })
+	return l.closeErr
+}
+
+// waitBounded waits for the launcher to exit, giving up when ctx does. Only the
+// bound is reported: how the launcher itself exited says nothing about whether
+// what it created is still there — an interrupted one may well have printed the
+// id of a pane that outlives it.
+//
+// The goroutine outlives a bound that ran out, and has to: a wait cannot be
+// taken back, and this one ends when the launcher does.
+func (l *Launcher) waitBounded(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = l.Wait()
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
 }
 
 // run executes a tmux command carrying the same environment the popup command
