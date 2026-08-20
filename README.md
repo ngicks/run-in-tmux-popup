@@ -322,7 +322,11 @@ terminal, and `--x` / `--y` additionally accept tmux's position specifiers —
 `C` the centre of the terminal, `R` its right side, `P` the bottom left of the
 pane, `M` the mouse position, `W` the window position on the status line, `S`
 the line above or below it. A flag left unset leaves the backend's own
-placement:
+placement. One tmux quirk to know: a numeric `--y` anchors the popup's
+**bottom** edge (its coordinate machinery is shared with menus, which open
+upward), so the top row sits at `y − height`, clamped to the top — with the
+default height of half the terminal, every `--y` up to that half lands flush
+at the top. `--x` anchors the left edge as expected.
 
 ```
 $ run-in-popup exec --width 80% --height 20 -- htop

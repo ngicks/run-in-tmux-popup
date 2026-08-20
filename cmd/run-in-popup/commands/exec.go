@@ -115,7 +115,8 @@ func execCmd(parent *cobra.Command, flagConfig *string) {
 		&flagGeometry.y,
 		"y",
 		"",
-		"popup y position, same syntax as --x",
+		"popup y position, same syntax as --x"+
+			" (tmux anchors the popup's BOTTOM edge at y)",
 	)
 	cmd.Flags().StringVarP(
 		&flagGeometry.width,
