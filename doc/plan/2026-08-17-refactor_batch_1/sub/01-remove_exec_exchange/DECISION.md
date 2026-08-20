@@ -93,3 +93,20 @@ then carries only the file path. The workspace is mode-0700, the same
 protection level as the FIFOs beside it. tmux keeps `-e` — it has a
 real flag, and uniformity was explicitly not chosen. Rejected: the
 uniform launcher-owned env file across all backends.
+
+## Bridge takes all three stdio; the popup TTY moves to fd 3/4/5 + TTY_* env (user, 2026-08-20; amends the bridge shape)
+
+The gate-confirmed shape (stdin = popup TTY, stdout/stderr bridged) was
+retracted by the user: redirecting stdout/stderr away from the pane's
+pts prevents the command from controlling the floating pane at all.
+New shape: the command's fd 0/1/2 are all bridged to the caller's
+stdin/stdout/stderr over FIFOs, and the popup's terminal is handed to
+the command as fd 3 (read), fd 4 (write) and fd 5 (write), captured
+via $(tty) before the stdio redirections displace it. The same
+terminal is also named in TTY_IN/TTY_OUT/TTY_ERR environment variables
+— three variables, not one, because Windows cannot inherit arbitrary
+fds and splits its console into CONIN$/CONOUT$; on POSIX all three
+hold the same pts path. The fd handoff is shell redirection inside the
+pane's own command line, so it is multiplexer-agnostic (works under
+zellij exactly as under tmux). When the popup has no tty the fds and
+variables are simply absent rather than failing the launch.
