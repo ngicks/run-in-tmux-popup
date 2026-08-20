@@ -157,3 +157,20 @@ position and `-w/-h` size. The floating-pane backend therefore maps
 Width→-x, Height→-y, X→-X, Y→-Y. Whether -X/-Y accept the same
 position specifiers as display-popup remains for the tagged
 integration suite to confirm.
+
+## Geometry X/Y mean the top-left corner everywhere (user, 2026-08-20; amends the geometry entry)
+
+The verbatim pass-through made the same numeric Y mean different
+things: display-popup anchors its bottom edge at y, while the fork's
+new-pane -Y (and zellij's --y) place the top-left corner. The user
+ruled the divergence out ("Using different meaning of same numeric
+value is bad. Re-interpret them"): the abstract X/Y are defined as the
+popup's top-left corner on every backend. new-pane and zellij pass
+through unchanged; the display-popup client translates numeric Y to
+tmux's bottom anchor as y+height — cells with cells, percent with
+percent (tmux's own rounding may drift one cell). A numeric/percent Y
+with no Height, or with mixed units, is an error telling the caller to
+give --height in the same unit: assuming tmux's default half-terminal
+height cannot be done in cells without knowing the terminal size, and
+guessing places the popup wrong silently. Position specifiers
+(C/R/P/M/W/S) stay semantic and pass through untranslated.
