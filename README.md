@@ -194,11 +194,13 @@ its two mechanisms, and keeps resolving to `tmux-popup`.
 >
 > The backend works around it: before opening the pane it runs `tmux -V`, and on
 > anything it cannot identify as 3.7c or later it checks `#{window_zoomed_flag}`
-> and de-zooms first, re-zooming the same pane once the popup is gone. A version
-> string it cannot parse — including the `next-3.8` of development builds, which
-> pins no commit — counts as affected, since a needless de-zoom is a flicker and
-> a missed one is a dead server. Re-zooming is best-effort: if it fails the
-> window is left unzoomed and the failure is logged, never fatal.
+> and de-zooms first, re-zooming the same pane once the launch is released —
+> which can be while the floating pane still lives; re-zooming then un-floats it
+> into the layout rather than crashing the server. A version string it cannot
+> parse — including the `next-3.8` of development builds, which pins no commit —
+> counts as affected, since a needless de-zoom is a flicker and a missed one is
+> a dead server. Re-zooming is best-effort: if it fails the window is left
+> unzoomed and the failure is logged, never fatal.
 
 ### Configuration
 

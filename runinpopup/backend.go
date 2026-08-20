@@ -156,9 +156,13 @@ type Backend interface {
 	// Dismiss, which is what the launch layer calls on a canceled launch.
 	Launch(ctx context.Context, spec LaunchSpec) (PopupHandle, error)
 	// Prepare adjusts multiplexer state that would break — or crash — popup
-	// creation, and returns a func restoring that state once the popup is gone.
-	// Both may be no-ops: a nil restore means "nothing to undo", and is the
-	// normal result for backends that need no adjustment.
+	// creation, and returns a func restoring that state once the launch is
+	// released. That is not the popup being gone: no caller waits for the popup
+	// first, and on the floating-pane mechanisms — whose launcher returns the
+	// moment the pane exists — restore can well run while the popup still
+	// lives, so an implementation must tolerate that. Both may be no-ops: a nil
+	// restore means "nothing to undo", and is the normal result for backends
+	// that need no adjustment.
 	//
 	// tmux-floating-pane is the one implementation: it works around the tmux 3.7b
 	// crash on creating a floating pane while a pane is zoomed, under the
@@ -166,8 +170,10 @@ type Backend interface {
 	//   - Version-gated: de-zoom only on tmux versions affected by the bug
 	//     (< 3.7c). An unparseable version counts as affected — a spurious
 	//     de-zoom is flicker, a missed one takes down the tmux server.
-	//   - Restore is best-effort: callers run it after the popup closes, with a
-	//     context that outlives the popup's cancellation, and log its error
-	//     rather than failing the run.
+	//   - Restore is best-effort: callers run it when the launch is released —
+	//     possibly while the pane still lives, where re-zooming un-floats the
+	//     pane into the layout rather than crashing — with a context that
+	//     outlives the popup's cancellation, and log its error rather than
+	//     failing the run.
 	Prepare(ctx context.Context) (restore func(context.Context) error, err error)
 }
