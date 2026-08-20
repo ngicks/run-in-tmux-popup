@@ -475,6 +475,79 @@ func TestPinentryLauncher_Call_ttyThatIsNeverAnnounced(t *testing.T) {
 	}
 }
 
+// A backend that cannot build its handshake fails the exchange before any
+// popup is opened: there is no spec to launch, so nothing to dismiss and no
+// pinentry to start.
+func TestPinentryLauncher_Call_handshakeThatCannotBeBuilt(t *testing.T) {
+	p := newPinentryProxy(t, pinentryReadsUntilBye)
+	p.backend.handshakeErr = errors.New("this mechanism has no fifo channel")
+	p.feed(t, "BYE\n")
+
+	err := p.launcher.Call(t.Context())
+
+	if !errors.Is(err, p.backend.handshakeErr) {
+		t.Fatalf("err = %v, want it to wrap the handshake failure", err)
+	}
+	if !strings.Contains(err.Error(), "building tty handshake") {
+		t.Errorf("err = %v, want the stage that failed named", err)
+	}
+	if len(p.backend.launched) != 0 {
+		t.Error("a popup was launched although the handshake could not be built")
+	}
+	if _, err := os.Stat(p.pidfile); err == nil {
+		t.Error("pinentry was started although the handshake could not be built")
+	}
+}
+
+// A backend's ValidateTTY is its guard on what its popup could have written;
+// an announcement it rejects fails the exchange, while the popup is still
+// dismissed. The popup exits after announcing so the dismissal bytes have one
+// reader — the watcher — to land on.
+func TestPinentryLauncher_Call_validationRejectsTheAnnouncement(t *testing.T) {
+	p := newPinentryProxy(t, pinentryReadsUntilBye)
+	rejected := errors.New("not a terminal this popup could be on")
+	p.backend.script = announceThenExit
+	p.backend.validateTTY = func(string) (string, error) { return "", rejected }
+	dismissal := watchDone(t, p.doneFifo)
+	p.feed(t, "BYE\n")
+
+	err := p.launcher.Call(t.Context())
+
+	if !errors.Is(err, rejected) {
+		t.Fatalf("err = %v, want the validation failure", err)
+	}
+	if got := dismissal(); got != "done\n" {
+		t.Errorf("done fifo carried %q, want the popup dismissed anyway", got)
+	}
+	if _, err := os.Stat(p.pidfile); err == nil {
+		t.Error("pinentry was started on a rejected announcement")
+	}
+}
+
+// An empty announcement is a popup that reached the FIFO but had nothing to
+// say — there is no terminal to point pinentry at, and no answer is an error,
+// not a prompt on an empty tty name.
+func TestPinentryLauncher_Call_emptyAnnouncement(t *testing.T) {
+	p := newPinentryProxy(t, pinentryReadsUntilBye)
+	p.backend.script = func(ttyFifo, _ string) string {
+		return fmt.Sprintf("echo '' >> %s", shellargv.Quote(ttyFifo))
+	}
+	dismissal := watchDone(t, p.doneFifo)
+	p.feed(t, "BYE\n")
+
+	err := p.launcher.Call(t.Context())
+
+	if err == nil || !strings.Contains(err.Error(), "empty tty") {
+		t.Fatalf("err = %v, want the empty announcement refused", err)
+	}
+	if got := dismissal(); got != "done\n" {
+		t.Errorf("done fifo carried %q, want the popup dismissed anyway", got)
+	}
+	if _, err := os.Stat(p.pidfile); err == nil {
+		t.Error("pinentry was started although no terminal was announced")
+	}
+}
+
 // fakeRendezvous is a popup the exchange never has to open: it announces a
 // terminal on demand and records having been dismissed.
 type fakeRendezvous struct {

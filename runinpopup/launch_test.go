@@ -822,6 +822,96 @@ func TestPopupCommand_WaitStreams_launcherExitsWhileThePayloadRuns(t *testing.T)
 	}
 }
 
+// Without an output endpoint WaitStreams has nothing to decide by, so a failed
+// launcher must not vanish into a vacuously clean verdict: such a launch waits
+// through Wait, launcher failure included.
+func TestPopupCommand_WaitStreams_noEndpointFallsBackToWait(t *testing.T) {
+	launchErr := errors.New("no pane could be opened")
+	launcher := &PopupLauncher{
+		Backend: &failingLauncherBackend{
+			shellBackend: &shellBackend{},
+			err:          launchErr,
+		},
+	}
+
+	popup, err := launcher.Exec(t.Context(), PopupSpec{Script: "true"}, PopupStreams{})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if err := popup.WaitStreams(); !errors.Is(err, launchErr) {
+		t.Fatalf("WaitStreams = %v, want the launcher failure through the Wait fallback", err)
+	}
+}
+
+// A caller-provided workspace is where the pinentry handshake's FIFOs go, so a
+// directory anyone else could write into — swapping a FIFO for their own — is
+// refused before anything is placed in it. Only ownership and the directory's
+// own mode are checkable without root, so those are what the test drives.
+func TestWorkspaceOptions_callerDirMustBeSafe(t *testing.T) {
+	launch := func(dir string) error {
+		launcher := &PopupLauncher{
+			Backend:   &shellBackend{},
+			Workspace: WorkspaceOptions{Dir: dir},
+		}
+		popup, err := launcher.Exec(
+			t.Context(),
+			PopupSpec{Script: "cat"},
+			PopupStreams{Stdin: io.NopCloser(strings.NewReader(""))},
+		)
+		if err == nil {
+			if werr := popup.Wait(); werr != nil {
+				t.Errorf("Wait: %v", werr)
+			}
+		}
+		return err
+	}
+
+	t.Run("a private directory passes", func(t *testing.T) {
+		if err := launch(t.TempDir()); err != nil {
+			t.Fatalf("Exec: %v", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		perm os.FileMode
+	}{
+		{name: "group-writable", perm: 0o770},
+		{name: "other-writable", perm: 0o707},
+	} {
+		t.Run(tc.name+" is refused", func(t *testing.T) {
+			dir := t.TempDir()
+			// Chmod rather than Mkdir with the mode, which the umask would strip
+			// the interesting bits from.
+			if err := os.Chmod(dir, tc.perm); err != nil {
+				t.Fatalf("chmod: %v", err)
+			}
+			err := launch(dir)
+			if err == nil || !strings.Contains(err.Error(), "writable by other users") {
+				t.Fatalf("err = %v, want the unsafe mode refused", err)
+			}
+		})
+	}
+
+	t.Run("a plain file is refused", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "not-a-dir")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatalf("writing the file: %v", err)
+		}
+		err := launch(path)
+		if err == nil || !strings.Contains(err.Error(), "not a directory") {
+			t.Fatalf("err = %v, want the non-directory refused", err)
+		}
+	})
+
+	t.Run("a missing directory is refused", func(t *testing.T) {
+		err := launch(filepath.Join(t.TempDir(), "never-created"))
+		if err == nil || !strings.Contains(err.Error(), "checking the popup workspace") {
+			t.Fatalf("err = %v, want the stat failure surfaced", err)
+		}
+	})
+}
+
 func TestPopupLauncher_Exec_prepareFailureAborts(t *testing.T) {
 	prepareErr := errors.New("de-zoom failed")
 	launcher := &PopupLauncher{Backend: &shellBackend{prepareErr: prepareErr}}
