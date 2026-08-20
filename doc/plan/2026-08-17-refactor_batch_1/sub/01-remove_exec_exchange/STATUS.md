@@ -13,6 +13,15 @@ tty-handshake guard secrets are removed, `Config.DefaultBackend` is
 renamed `Config.Backend` (schema break), and zellij popup env travels
 via a sourced 0600 env file in the workspace instead of the argv.
 
+Amendment landed 2026-08-20 (user decision, recorded in DECISION.md):
+the bridge now takes all three stdio streams and the popup terminal
+moves to fd 3/4/5 + TTY_IN/TTY_OUT/TTY_ERR, captured by the launch's
+command-line prefix before the FIFO redirections; exec bridges stdin
+(pipelines flow through the popup) and its input relay is excluded
+from every wait so a caller terminal that never EOFs cannot hang the
+bridge. Verified against a real pty during implementation; pinentry
+and env-only launches get no prefix and are byte-identical.
+
 No next action — the sub-plan is complete. Known open follow-up
 elsewhere: the parent plan's follow-up list (parent STATUS.md), plus
 exec's Ctrl-C error identity being racy (nil vs "popup failed:
