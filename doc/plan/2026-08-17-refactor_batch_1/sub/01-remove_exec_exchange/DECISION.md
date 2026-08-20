@@ -174,3 +174,21 @@ give --height in the same unit: assuming tmux's default half-terminal
 height cannot be done in cells without knowing the terminal size, and
 guessing places the popup wrong silently. Position specifiers
 (C/R/P/M/W/S) stay semantic and pass through untranslated.
+
+## Cancelling a launch dismisses the popup (user, 2026-08-20)
+
+Cancelling exec used to SIGINT the launcher process only, which for
+tmux merely detaches the display client and leaves the popup running
+its command — the user ruled that out. The backend contract grows a
+dismissal: PopupHandle gains Dismiss(ctx) error, and the launch layer
+invokes it (on a context detached from the cancellation) when the
+launch's context is cancelled, before the launcher teardown. Probed
+mechanisms, verified against the installed binaries: tmux-popup closes
+via `display-popup -C -c <client>` (no id needed); the fork's
+new-pane launches with `-P -F '#{pane_id}'` and kills via
+`kill-pane -t <id>`; zellij run prints the created pane id
+(terminal_<N>) on stdout and `zellij action close-pane --pane-id <id>`
+closes it. For the two early-exit launchers the id is parsed from the
+launcher's captured output after its Wait — never concurrently, so the
+output-buffer race stays fixed. Live confirmation of the close
+commands' end-to-end effect belongs to the tagged integration suite.
