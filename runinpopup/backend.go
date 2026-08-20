@@ -22,6 +22,15 @@ type PopupSpec struct {
 	// of the terminal. Empty leaves the backend's own placement, and a field left
 	// empty puts nothing on a backend's command line.
 	//
+	// X and Y are the popup's top-left corner on every backend. Backends whose
+	// mechanism says the same thing get the values as they were written; tmux's
+	// display-popup, which places a popup by its bottom edge instead, has the
+	// height added to Y on its way to the command line. That translation needs a
+	// height to add: on the tmux-popup backend a numeric or percentage Y with no
+	// Height, or with a Height in the other unit, fails the launch rather than
+	// putting the popup somewhere the caller did not ask for. Either way tmux
+	// still clamps a popup that would fall outside the terminal.
+	//
 	// X and Y additionally take tmux's single-letter position specifiers, which
 	// reach tmux untranslated:
 	//
@@ -56,9 +65,11 @@ type PopupSpec struct {
 // translates it into its mechanism's argv and starts it, nothing else.
 type LaunchSpec struct {
 	// Title, Env, X, Y, Width, Height, Command and Script carry the same meaning
-	// as their PopupSpec counterparts. The geometry has been validated by the
-	// time a backend sees it, so what is left is translating it into flags — or,
-	// for a value the backend's multiplexer has no equivalent for, refusing it.
+	// as their PopupSpec counterparts. Each value has been validated on its own by
+	// the time a backend sees it, so what is left is what only the backend knows:
+	// translating the geometry into its mechanism's flags and coordinates, or
+	// refusing what that mechanism cannot be asked for — a value it has no
+	// equivalent for, or a combination it cannot place.
 	Title               string
 	Env                 map[string]string
 	X, Y, Width, Height string

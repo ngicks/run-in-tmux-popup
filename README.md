@@ -265,7 +265,7 @@ Flags:
       --title string     popup title (default: the backend's own; tmux-floating-pane has no title flag and ignores it)
   -w, --width string     popup width: cells or "N%" (default: the backend's own)
       --x string         popup x position: cells, "N%" or a tmux position specifier C/R/P/M/W/S, which zellij rejects (default: the backend's own)
-      --y string         popup y position, same syntax as --x
+      --y string         popup y position, same syntax as --x (tmux-popup needs --height in the same unit as a numeric --y)
 ```
 
 It opens a popup and lets it run the command **on the popup's own terminal**. The
@@ -322,14 +322,20 @@ terminal, and `--x` / `--y` additionally accept tmux's position specifiers —
 `C` the centre of the terminal, `R` its right side, `P` the bottom left of the
 pane, `M` the mouse position, `W` the window position on the status line, `S`
 the line above or below it. A flag left unset leaves the backend's own
-placement. One tmux quirk to know: a numeric `--y` anchors the popup's
-**bottom** edge (its coordinate machinery is shared with menus, which open
-upward), so the top row sits at `y − height`, clamped to the top — with the
-default height of half the terminal, every `--y` up to that half lands flush
-at the top. `--x` anchors the left edge as expected.
+placement.
+
+`--x` and `--y` are the popup's **top-left corner**, the same on every backend.
+That is not what every popup mechanism takes natively — tmux's `display-popup`
+places a popup by its bottom edge — so the `tmux-popup` backend adds the height
+to a numeric `--y` for you, and needs `--height` in the same unit to do it: a
+numeric or percentage `--y` with no `--height`, or with one in the other unit,
+fails the launch instead of guessing. The other backends take both coordinates
+as written. A popup that would fall outside the terminal is still tmux's to
+clamp.
 
 ```
 $ run-in-popup exec --width 80% --height 20 -- htop
+$ run-in-popup exec --x 0 --y 5 --height 20 -- htop   # top edge on row 5
 ```
 
 Only the tmux backends understand the specifiers; `zellij` takes cells and

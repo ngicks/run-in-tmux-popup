@@ -73,6 +73,47 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// A sum exists only between two values measuring the same thing: cells say how
+// many cells, a percentage says how much of a terminal nobody here has measured.
+func TestSum(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		a, b string
+		want string
+	}{
+		{name: "cells", a: "10", b: "20", want: "30"},
+		{name: "from the top row", a: "0", b: "20", want: "20"},
+		{name: "nothing added", a: "10", b: "0", want: "10"},
+		{name: "percentages", a: "10%", b: "40%", want: "50%"},
+		{name: "past a whole terminal", a: "80%", b: "40%", want: "120%"},
+		{name: "no leading zero survives", a: "007", b: "003", want: "10"},
+		{name: "cells and a percentage", a: "10", b: "40%"},
+		{name: "a percentage and cells", a: "10%", b: "40"},
+		{name: "a position specifier is not a quantity", a: "C", b: "20"},
+		{name: "nor is one on the other side", a: "10", b: "M"},
+		{name: "an empty value", a: "10", b: ""},
+		{name: "an empty value on the other side", a: "", b: "20"},
+		{name: "a malformed value", a: "10", b: "twenty"},
+		{name: "a count no terminal has", a: strings.Repeat("9", 30), b: "20"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := Sum(tc.a, tc.b)
+			if tc.want == "" {
+				if ok {
+					t.Fatalf("Sum(%q, %q) = %q, want no sum", tc.a, tc.b, got)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("Sum(%q, %q) = _, false, want %q", tc.a, tc.b, tc.want)
+			}
+			if got != tc.want {
+				t.Errorf("Sum(%q, %q) = %q, want %q", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsPosition(t *testing.T) {
 	for _, value := range []string{"C", "R", "P", "M", "W", "S"} {
 		if !IsPosition(value) {

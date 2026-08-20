@@ -57,7 +57,9 @@ func TestClient_PopupCommand_noClient(t *testing.T) {
 }
 
 // Geometry is display-popup's own vocabulary, so every value goes through
-// untranslated — the specifier as much as the cells and the percentage.
+// untranslated — the specifier as much as the cells and the percentage. -y is
+// therefore the bottom edge tmux reads it as; a caller placing a top edge has
+// already done that arithmetic.
 func TestClient_PopupCommand_geometry(t *testing.T) {
 	c := testClient(t, Options{TMUX: "/tmp/tmux-1000/default,1,0"})
 

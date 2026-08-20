@@ -64,6 +64,9 @@ type RunRequest struct {
 	// else: the single-letter positions tmux understands have no equivalent here
 	// and are refused by whoever builds the request. Empty leaves zellij's
 	// default.
+	//
+	// X and Y are the pane's top-left corner, which is what zellij's own flags
+	// take, so they travel as they were written.
 	X, Y, Width, Height string
 	// Command is the argv the pane runs.
 	Command []string

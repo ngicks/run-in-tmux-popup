@@ -94,7 +94,11 @@ func TestTmuxPopup_Launch_ttyHandshake(t *testing.T) {
 		t.Error("ValidateTTY must be nil: the announced tty is taken as-is")
 	}
 
-	path, args := b.tmux.PopupCommand(b.popupRequest(launchSpec(handshake.Spec)))
+	req, err := b.popupRequest(launchSpec(handshake.Spec))
+	if err != nil {
+		t.Fatalf("popupRequest: %v", err)
+	}
+	path, args := b.tmux.PopupCommand(req)
 	assertCommand(t, path, args, "/usr/bin/tmux", []string{
 		"popup",
 		"-c", "%1",
@@ -105,26 +109,118 @@ func TestTmuxPopup_Launch_ttyHandshake(t *testing.T) {
 	})
 }
 
-// The spec's geometry reaches display-popup as the flags it names.
+// The spec's geometry reaches display-popup as the flags it names, and Y as the
+// coordinate display-popup means by one: a spec places the popup's top-left
+// corner, display-popup's -y its bottom edge, so the height is added on the way
+// through. Whether the sum lands where it was asked for at the edge of the
+// terminal is tmux's answer to give — it clamps a popup itself, and nothing here
+// second-guesses the bounds.
 func TestTmuxPopup_Launch_geometry(t *testing.T) {
-	b := tmuxBackend(t)
+	for _, tc := range []struct {
+		name string
+		spec runinpopup.PopupSpec
+		// want is the geometry between the fixed head of the command line and the
+		// payload at its end.
+		want []string
+	}{
+		{
+			name: "cells are added",
+			spec: runinpopup.PopupSpec{X: "C", Y: "10", Width: "80%", Height: "20"},
+			want: []string{"-x", "C", "-y", "30", "-w", "80%", "-h", "20"},
+		},
+		{
+			name: "percentages are added as percentages",
+			spec: runinpopup.PopupSpec{Y: "10%", Height: "40%"},
+			want: []string{"-y", "50%", "-h", "40%"},
+		},
+		{
+			// The top row is a row like any other: it is the height that reaches -y.
+			name: "the top row",
+			spec: runinpopup.PopupSpec{Y: "0", Height: "20"},
+			want: []string{"-y", "20", "-h", "20"},
+		},
+		{
+			// A specifier names a placement tmux works out with the height in hand,
+			// so there is nothing to add to it — and nothing to demand beside it.
+			name: "a position specifier passes through",
+			spec: runinpopup.PopupSpec{Y: "C", Height: "20"},
+			want: []string{"-y", "C", "-h", "20"},
+		},
+		{
+			name: "a position specifier needs no height at all",
+			spec: runinpopup.PopupSpec{Y: "S"},
+			want: []string{"-y", "S"},
+		},
+		{
+			// An empty Y is no coordinate to convert, and a height alone is tmux's
+			// own placement at that size.
+			name: "no Y, no conversion",
+			spec: runinpopup.PopupSpec{Height: "20"},
+			want: []string{"-h", "20"},
+		},
+		{
+			// X is the left edge on every mechanism; only Y ever disagreed.
+			name: "X travels as it was written",
+			spec: runinpopup.PopupSpec{X: "10"},
+			want: []string{"-x", "10"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := tmuxBackend(t)
+			tc.spec.Command = []string{"htop"}
 
-	path, args := b.tmux.PopupCommand(b.popupRequest(launchSpec(runinpopup.PopupSpec{
-		X:       "C",
-		Y:       "10",
-		Width:   "80%",
-		Height:  "20",
-		Command: []string{"htop"},
-	})))
-	assertCommand(t, path, args, "/usr/bin/tmux", []string{
-		"popup",
-		"-c", "%1",
-		"-x", "C",
-		"-y", "10",
-		"-w", "80%",
-		"-h", "20",
-		"-E", `'htop'`,
-	})
+			req, err := b.popupRequest(launchSpec(tc.spec))
+			if err != nil {
+				t.Fatalf("popupRequest: %v", err)
+			}
+			path, args := b.tmux.PopupCommand(req)
+
+			assertCommand(t, path, args, "/usr/bin/tmux", slices.Concat(
+				[]string{"popup", "-c", "%1"},
+				tc.want,
+				[]string{"-E", `'htop'`},
+			))
+		})
+	}
+}
+
+// Adding a height to Y is the only way display-popup can be asked for a top
+// edge, so a Y that names one without a height to add — or with a height
+// measured in the other unit — is refused rather than placed at a guess.
+func TestTmuxPopup_Launch_yNeedsAMatchingHeight(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		spec runinpopup.PopupSpec
+	}{
+		{name: "cells without a height", spec: runinpopup.PopupSpec{Y: "10"}},
+		{name: "a percentage without a height", spec: runinpopup.PopupSpec{Y: "10%"}},
+		{
+			name: "cells against a percentage",
+			spec: runinpopup.PopupSpec{Y: "10", Height: "40%"},
+		},
+		{
+			name: "a percentage against cells",
+			spec: runinpopup.PopupSpec{Y: "10%", Height: "20"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.spec.Command = []string{"htop"}
+
+			_, err := tmuxBackend(t).popupRequest(launchSpec(tc.spec))
+			if err == nil {
+				t.Fatal("popupRequest must fail: the top edge cannot be placed")
+			}
+			if !strings.Contains(err.Error(), NameTmuxPopup) {
+				t.Errorf("err = %v, want the backend named in it", err)
+			}
+			if !strings.Contains(err.Error(), "Height in the same unit") {
+				t.Errorf("err = %v, want it to name what is missing", err)
+			}
+			if !strings.Contains(err.Error(), tc.spec.Y) {
+				t.Errorf("err = %v, want the value %q quoted in it", err, tc.spec.Y)
+			}
+		})
+	}
 }
 
 // The session meta rules are the tmux client's; both constructors have to

@@ -43,13 +43,22 @@ command report it in what it writes.
 
 --x, --y, --width and --height place and size the popup, in the vocabulary tmux
 takes: a bare number is terminal cells and "N%" a percentage of the terminal.
---x and --y additionally take tmux's position specifiers — C the centre of the
-terminal, R its right side, P the bottom left of the pane, M the mouse position,
-W the window position on the status line, S the line above or below it — which
-the zellij backend rejects, having no equivalent for them. Whatever is left
-unset is the backend's own placement.
+--x and --y are the popup's top-left corner on every backend. --x and --y
+additionally take tmux's position specifiers — C the centre of the terminal, R
+its right side, P the bottom left of the pane, M the mouse position, W the
+window position on the status line, S the line above or below it — which the
+zellij backend rejects, having no equivalent for them. Whatever is left unset is
+the backend's own placement.
 
   run-in-popup exec --width 80% --height 20 -- htop
+
+tmux's display-popup places a popup by its bottom edge, so the tmux-popup
+backend adds the height to a numeric --y itself and needs --height in the same
+unit to do it: a numeric or percentage --y without one, or with one in the other
+unit, fails the launch. The line below opens a 20-row popup whose top-left
+corner is column 0, row 5 — on that backend as on any other.
+
+  run-in-popup exec --x 0 --y 5 --height 20 -- htop
 
 --backend wins over the configured backend, which in turn wins over
 auto-detection from PINENTRY_USER_DATA, then $TMUX (which selects tmux-popup;
@@ -116,7 +125,7 @@ func execCmd(parent *cobra.Command, flagConfig *string) {
 		"y",
 		"",
 		"popup y position, same syntax as --x"+
-			" (tmux anchors the popup's BOTTOM edge at y)",
+			" (tmux-popup needs --height in the same unit as a numeric --y)",
 	)
 	cmd.Flags().StringVarP(
 		&flagGeometry.width,

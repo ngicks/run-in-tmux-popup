@@ -21,6 +21,9 @@ type PopupRequest struct {
 	// X, Y, Width and Height place and size the popup (-x, -y, -w, -h) in tmux's
 	// own vocabulary, so they are passed through verbatim. Empty leaves tmux's
 	// default.
+	//
+	// Both coordinates are display-popup's: -x is the popup's left edge, -y its
+	// bottom one. A caller that thinks in top edges converts before it gets here.
 	X, Y, Width, Height string
 	// Command is the argv the popup runs.
 	Command []string
@@ -65,6 +68,9 @@ type PaneRequest struct {
 	// X, Y, Width and Height place and size the pane, in the same vocabulary
 	// display-popup takes and passed through verbatim; the flags they land on are
 	// not display-popup's, see NewPaneCommand. Empty leaves tmux's default.
+	//
+	// X and Y are the pane's top-left corner, which is what new-pane's -X/-Y
+	// take — display-popup's bottom-edge -y has no counterpart here.
 	X, Y, Width, Height string
 	// Command is the argv the pane runs.
 	Command []string

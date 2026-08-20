@@ -7,6 +7,7 @@ package geometry
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -40,6 +41,34 @@ func Validate(field, value string, position bool) error {
 		)
 	}
 	return fmt.Errorf("popup geometry %s %q: want %s", field, value, syntax(position))
+}
+
+// Sum adds two values of one unit — cells to cells, a percentage of the
+// terminal to a percentage of it — and reports whether there was a sum to give.
+// Anything else has none: a cell count and a percentage cannot be added without
+// the terminal size, which is the multiplexer's to know, and a position
+// specifier is not a quantity at all. It is the caller that knows what the two
+// values are and what to say when they do not add up.
+func Sum(a, b string) (string, bool) {
+	switch {
+	case isCells(a) && isCells(b):
+		return add(a, b, "")
+	case isPercent(a) && isPercent(b):
+		return add(strings.TrimSuffix(a, "%"), strings.TrimSuffix(b, "%"), "%")
+	}
+	return "", false
+}
+
+// add sums two digit strings and renders the total with unit appended. A count
+// too large for an int has no sum either: the width of a terminal is what these
+// measure, so a value that far out is a mistake rather than a total to compute.
+func add(a, b, unit string) (string, bool) {
+	x, errA := strconv.Atoi(a)
+	y, errB := strconv.Atoi(b)
+	if errA != nil || errB != nil {
+		return "", false
+	}
+	return strconv.Itoa(x+y) + unit, true
 }
 
 // syntax spells out what a field accepts, for the error a malformed value gets.
