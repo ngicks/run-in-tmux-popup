@@ -113,7 +113,7 @@ const zellijHandshakePaneName = "pinentry-curses"
 
 // NewTTYHandshake announces the tty as-is. The FIFO paths travel in the argv
 // itself: "zellij run" has no env injection flag, and a path is not what the
-// sourced environment file exists to keep out of a command line.
+// sourced environment FIFO exists to keep out of a command line.
 func (b *Zellij) NewTTYHandshake(
 	ttyFifo, doneFifo string,
 ) (runinpopup.TTYHandshake, error) {

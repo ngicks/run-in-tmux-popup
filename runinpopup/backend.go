@@ -89,10 +89,11 @@ type LaunchSpec struct {
 	// here. The launch gives the directory back when it is over — which, on a
 	// mechanism whose launcher returns at pane creation, can be before the
 	// payload has started. So whatever the payload must still find here needs a
-	// rendezvous holding the launch open until the payload has it: the payload
-	// FIFOs have theirs by construction, and a backend adding a startup file of
-	// its own arranges its own — zellij delivers its environment over a FIFO
-	// whose delivery its handle's Wait joins.
+	// rendezvous holding the launch open until the payload has it: the output
+	// FIFOs have theirs by construction — stdin's relay is deliberately never
+	// waited on, see PopupStreams — and a backend adding a startup file of its
+	// own arranges its own rendezvous, the way zellij delivers its environment
+	// over a FIFO whose delivery its handle's Wait joins.
 	WorkDir string
 
 	// Stdin, Stdout and Stderr are the endpoints the payload's streams of those

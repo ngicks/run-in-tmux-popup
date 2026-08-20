@@ -1,6 +1,6 @@
 // Package zellij speaks to the zellij executable: it builds every argv this
 // module sends to it, including the shell wrapping zellij needs for payloads it
-// cannot run as a bare argv, and the environment file such a payload sources.
+// cannot run as a bare argv, and the environment FIFO such a payload sources.
 // Callers decide which zellij operation expresses their popup; how zellij is
 // asked for it lives here.
 package zellij

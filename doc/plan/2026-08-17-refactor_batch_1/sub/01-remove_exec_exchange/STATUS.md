@@ -11,7 +11,9 @@ landed four orthogonal user decisions recorded in DECISION.md:
 `runworkspace.Open` always creates the run directory, the tmux
 tty-handshake guard secrets are removed, `Config.DefaultBackend` is
 renamed `Config.Backend` (schema break), and zellij popup env travels
-via a sourced 0600 env file in the workspace instead of the argv.
+via a sourced 0600 env file in the workspace instead of the argv
+(since amended to a delivered FIFO after adversarial review found the
+file racy — see DECISION.md, 2026-08-21).
 
 Amendment landed 2026-08-20, then corrected the same day (both user
 decisions, recorded in DECISION.md — the second supersedes the first):
