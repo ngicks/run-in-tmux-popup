@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -48,7 +49,7 @@ func zellijBackend(t *testing.T) *Zellij {
 	return b
 }
 
-func assertPopupCommand(
+func assertCommand(
 	t *testing.T,
 	gotPath string,
 	gotArgs []string,
@@ -64,278 +65,264 @@ func assertPopupCommand(
 	}
 }
 
+// launchSpec is what the launch layer hands a backend for a payload that needs
+// no stream of its own: the template's command line, unchanged.
+func launchSpec(spec runinpopup.PopupSpec) runinpopup.LaunchSpec {
+	return runinpopup.LaunchSpec{
+		Title:   spec.Title,
+		Env:     spec.Env,
+		X:       spec.X,
+		Y:       spec.Y,
+		Width:   spec.Width,
+		Height:  spec.Height,
+		Command: spec.Command,
+		Script:  spec.Script,
+	}
+}
+
 // The handshake argv is asserted literally: it is the one command line proven to
 // work against a live tmux, so any change to it must be a deliberate edit here.
-func TestTmuxPopup_PopupCommand_pinentryHandshake(t *testing.T) {
+func TestTmuxPopup_Launch_ttyHandshake(t *testing.T) {
 	b := tmuxBackend(t)
 
-	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
+	handshake, err := b.NewTTYHandshake("/tmp/popup/tty", "/tmp/popup/done")
 	if err != nil {
-		t.Fatalf("NewPinentryHandshake: %v", err)
+		t.Fatalf("NewTTYHandshake: %v", err)
 	}
-	prefix := handshake.Spec.Env["SEC_PREFIX"]
-	suffix := handshake.Spec.Env["SEC_SUFFIX"]
+	if handshake.ValidateTTY != nil {
+		t.Error("ValidateTTY must be nil: the announced tty is taken as-is")
+	}
 
-	path, args := b.PopupCommand(handshake.Spec)
-	assertPopupCommand(t, path, args, "/usr/bin/tmux", []string{
+	req, err := b.popupRequest(launchSpec(handshake.Spec))
+	if err != nil {
+		t.Fatalf("popupRequest: %v", err)
+	}
+	path, args := b.tmux.PopupCommand(req)
+	assertCommand(t, path, args, "/usr/bin/tmux", []string{
 		"popup",
 		"-c", "%1",
 		"-e", "DONE_FIFO_FILE=/tmp/popup/done",
-		"-e", "SEC_PREFIX=" + prefix,
-		"-e", "SEC_SUFFIX=" + suffix,
 		"-e", "TTY_FIFO_FILE=/tmp/popup/tty",
-		"-E", "echo ${SEC_PREFIX}$(tty)${SEC_SUFFIX} >> ${TTY_FIFO_FILE}" +
+		"-E", "echo $(tty) >> ${TTY_FIFO_FILE}" +
 			" && read done < ${DONE_FIFO_FILE}",
 	})
 }
 
-func TestTmuxPopup_PopupCommand_argvIsQuoted(t *testing.T) {
-	b := tmuxBackend(t)
-
-	path, args := b.PopupCommand(runinpopup.PopupSpec{
-		Title:   "editor",
-		Env:     map[string]string{"B": "2", "A": "1"},
-		Command: []string{"vim", "my file.txt"},
-	})
-	assertPopupCommand(t, path, args, "/usr/bin/tmux", []string{
-		"popup",
-		"-c", "%1",
-		"-T", "editor",
-		"-e", "A=1",
-		"-e", "B=2",
-		"-E", `'vim' 'my file.txt'`,
-	})
-}
-
-func TestTmuxPopup_PopupCommand_noClient(t *testing.T) {
-	b, err := NewTmuxPopup(Options{TMUX: "/tmp/tmux-1000/default,1,0"})
-	if err != nil {
-		t.Fatalf("NewTmuxPopup: %v", err)
-	}
-	path, args := b.PopupCommand(runinpopup.PopupSpec{Command: []string{"true"}})
-	assertPopupCommand(t, path, args, "tmux", []string{"popup", "-E", `'true'`})
-}
-
-func TestNewTmuxPopup_sessionMeta(t *testing.T) {
-	// Malformed meta only matters when it is the value that will be exported.
-	if _, err := NewTmuxPopup(Options{SessionMeta: "not-a-meta"}); err == nil {
-		t.Error("malformed session meta must be rejected when $TMUX is unset")
-	}
-	if _, err := NewTmuxPopup(Options{
-		SessionMeta: "not-a-meta",
-		TMUX:        "/tmp/tmux-1000/default,1,0",
-	}); err != nil {
-		t.Errorf("session meta is unused when $TMUX is set, got %v", err)
-	}
-}
-
-func TestTmuxPopup_Environ(t *testing.T) {
-	meta := "/run/user/1000/tmux-1000/default,111,0"
-
-	b := tmuxBackend(t)
-	if got := b.Environ(); !slices.Equal(got, []string{"TMUX=" + meta}) {
-		t.Errorf("Environ = %#v, want TMUX set from the session meta", got)
-	}
-
-	inside, err := NewTmuxPopup(Options{SessionMeta: meta, TMUX: "/other,2,0"})
-	if err != nil {
-		t.Fatalf("NewTmuxPopup: %v", err)
-	}
-	if got := inside.Environ(); got != nil {
-		t.Errorf("Environ = %#v, want nil when $TMUX is already set", got)
-	}
-}
-
-func TestTmuxPopup_ValidateTTY(t *testing.T) {
-	b := tmuxBackend(t)
-
-	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
-	if err != nil {
-		t.Fatalf("NewPinentryHandshake: %v", err)
-	}
-	prefix := handshake.Spec.Env["SEC_PREFIX"]
-	suffix := handshake.Spec.Env["SEC_SUFFIX"]
-	if prefix == "" || suffix == "" || prefix == suffix {
-		t.Fatalf("prefix = %q, suffix = %q: want two distinct secrets", prefix, suffix)
-	}
-
+// The spec's geometry reaches display-popup as the flags it names, and Y as the
+// coordinate display-popup means by one: a spec places the popup's top-left
+// corner, display-popup's -y its bottom edge, so the height is added on the way
+// through. Whether the sum lands where it was asked for at the edge of the
+// terminal is tmux's answer to give — it clamps a popup itself, and nothing here
+// second-guesses the bounds.
+func TestTmuxPopup_Launch_geometry(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		line string
-		want string
+		spec runinpopup.PopupSpec
+		// want is the geometry between the fixed head of the command line and the
+		// payload at its end.
+		want []string
 	}{
-		{"guarded tty", prefix + "/dev/pts/3" + suffix, "/dev/pts/3"},
-		{"empty tty still unwraps", prefix + suffix, ""},
+		{
+			name: "cells are added",
+			spec: runinpopup.PopupSpec{X: "C", Y: "10", Width: "80%", Height: "20"},
+			want: []string{"-x", "C", "-y", "30", "-w", "80%", "-h", "20"},
+		},
+		{
+			name: "percentages are added as percentages",
+			spec: runinpopup.PopupSpec{Y: "10%", Height: "40%"},
+			want: []string{"-y", "50%", "-h", "40%"},
+		},
+		{
+			// The top row is a row like any other: it is the height that reaches -y.
+			name: "the top row",
+			spec: runinpopup.PopupSpec{Y: "0", Height: "20"},
+			want: []string{"-y", "20", "-h", "20"},
+		},
+		{
+			// A specifier names a placement tmux works out with the height in hand,
+			// so there is nothing to add to it — and nothing to demand beside it.
+			name: "a position specifier passes through",
+			spec: runinpopup.PopupSpec{Y: "C", Height: "20"},
+			want: []string{"-y", "C", "-h", "20"},
+		},
+		{
+			name: "a position specifier needs no height at all",
+			spec: runinpopup.PopupSpec{Y: "S"},
+			want: []string{"-y", "S"},
+		},
+		{
+			// An empty Y is no coordinate to convert, and a height alone is tmux's
+			// own placement at that size.
+			name: "no Y, no conversion",
+			spec: runinpopup.PopupSpec{Height: "20"},
+			want: []string{"-h", "20"},
+		},
+		{
+			// X is the left edge on every mechanism; only Y ever disagreed.
+			name: "X travels as it was written",
+			spec: runinpopup.PopupSpec{X: "10"},
+			want: []string{"-x", "10"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := handshake.ValidateTTY(tc.line)
+			b := tmuxBackend(t)
+			tc.spec.Command = []string{"htop"}
+
+			req, err := b.popupRequest(launchSpec(tc.spec))
 			if err != nil {
-				t.Fatalf("ValidateTTY(%q): %v", tc.line, err)
+				t.Fatalf("popupRequest: %v", err)
 			}
-			if got != tc.want {
-				t.Errorf("ValidateTTY(%q) = %q, want %q", tc.line, got, tc.want)
-			}
+			path, args := b.tmux.PopupCommand(req)
+
+			assertCommand(t, path, args, "/usr/bin/tmux", slices.Concat(
+				[]string{"popup", "-c", "%1"},
+				tc.want,
+				[]string{"-E", `'htop'`},
+			))
 		})
 	}
+}
 
+// Adding a height to Y is the only way display-popup can be asked for a top
+// edge, so a Y that names one without a height to add — or with a height
+// measured in the other unit — is refused rather than placed at a guess.
+func TestTmuxPopup_Launch_yNeedsAMatchingHeight(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		line string
+		spec runinpopup.PopupSpec
 	}{
-		{"bare tty", "/dev/pts/3"},
-		{"no prefix", "/dev/pts/3" + suffix},
-		{"no suffix", prefix + "/dev/pts/3"},
-		{"swapped secrets", suffix + "/dev/pts/3" + prefix},
-		{"foreign secrets", strings.Repeat("0", len(prefix)) +
-			"/dev/pts/3" + strings.Repeat("0", len(suffix))},
-		{"empty line", ""},
+		{name: "cells without a height", spec: runinpopup.PopupSpec{Y: "10"}},
+		{name: "a percentage without a height", spec: runinpopup.PopupSpec{Y: "10%"}},
+		{
+			name: "cells against a percentage",
+			spec: runinpopup.PopupSpec{Y: "10", Height: "40%"},
+		},
+		{
+			name: "a percentage against cells",
+			spec: runinpopup.PopupSpec{Y: "10%", Height: "20"},
+		},
 	} {
-		t.Run("reject/"+tc.name, func(t *testing.T) {
-			got, err := handshake.ValidateTTY(tc.line)
+		t.Run(tc.name, func(t *testing.T) {
+			tc.spec.Command = []string{"htop"}
+
+			_, err := tmuxBackend(t).popupRequest(launchSpec(tc.spec))
 			if err == nil {
-				t.Fatalf("ValidateTTY(%q) = %q, want an error", tc.line, got)
+				t.Fatal("popupRequest must fail: the top edge cannot be placed")
+			}
+			if !strings.Contains(err.Error(), NameTmuxPopup) {
+				t.Errorf("err = %v, want the backend named in it", err)
+			}
+			if !strings.Contains(err.Error(), "Height in the same unit") {
+				t.Errorf("err = %v, want it to name what is missing", err)
+			}
+			if !strings.Contains(err.Error(), tc.spec.Y) {
+				t.Errorf("err = %v, want the value %q quoted in it", err, tc.spec.Y)
 			}
 		})
 	}
 }
 
-func TestTmuxFloatingPane_PopupCommand_pinentryHandshake(t *testing.T) {
+// The session meta rules are the tmux client's; both constructors have to
+// surface its verdict.
+func TestNewTmuxBackends_sessionMetaIsValidated(t *testing.T) {
+	if _, err := NewTmuxPopup(Options{SessionMeta: "not-a-meta"}); err == nil {
+		t.Error("NewTmuxPopup must reject a malformed session meta")
+	}
+	if _, err := NewTmuxFloatingPane(Options{SessionMeta: "not-a-meta"}); err == nil {
+		t.Error("NewTmuxFloatingPane must reject a malformed session meta")
+	}
+}
+
+// The session environ is what points a launch at the server hosting the popup,
+// so both backends have to have handed their client the session meta.
+func TestTmuxBackends_sessionEnviron(t *testing.T) {
+	want := []string{"TMUX=/run/user/1000/tmux-1000/default,111,0"}
+
+	if got := tmuxBackend(t).tmux.Environ(); !slices.Equal(got, want) {
+		t.Errorf("TmuxPopup client environ = %#v, want %#v", got, want)
+	}
+	if got := tmuxFloatingPaneBackend(t).tmux.Environ(); !slices.Equal(got, want) {
+		t.Errorf("TmuxFloatingPane client environ = %#v, want %#v", got, want)
+	}
+}
+
+func TestTmuxFloatingPane_Launch_ttyHandshake(t *testing.T) {
 	b := tmuxFloatingPaneBackend(t)
 
-	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
+	handshake, err := b.NewTTYHandshake("/tmp/popup/tty", "/tmp/popup/done")
 	if err != nil {
-		t.Fatalf("NewPinentryHandshake: %v", err)
+		t.Fatalf("NewTTYHandshake: %v", err)
 	}
-	prefix := handshake.Spec.Env["SEC_PREFIX"]
-	suffix := handshake.Spec.Env["SEC_SUFFIX"]
+	if handshake.ValidateTTY != nil {
+		t.Error("ValidateTTY must be nil: the announced tty is taken as-is")
+	}
 
-	path, args := b.PopupCommand(handshake.Spec)
-	assertPopupCommand(t, path, args, "/usr/bin/tmux", []string{
+	path, args := b.tmux.NewPaneCommand(b.paneRequest(launchSpec(handshake.Spec)))
+	assertCommand(t, path, args, "/usr/bin/tmux", []string{
 		"new-pane",
 		"-t", "work",
+		"-P", "-F", "#{pane_id}",
 		"-e", "DONE_FIFO_FILE=/tmp/popup/done",
-		"-e", "SEC_PREFIX=" + prefix,
-		"-e", "SEC_SUFFIX=" + suffix,
 		"-e", "TTY_FIFO_FILE=/tmp/popup/tty",
-		"--", "echo ${SEC_PREFIX}$(tty)${SEC_SUFFIX} >> ${TTY_FIFO_FILE}" +
+		"--", "echo $(tty) >> ${TTY_FIFO_FILE}" +
 			" && read done < ${DONE_FIFO_FILE}",
 	})
 }
 
-// The guard is the tmux-popup one, shared: same secrets, same validator.
-func TestTmuxFloatingPane_ValidateTTY(t *testing.T) {
-	handshake, err := tmuxFloatingPaneBackend(t).
-		NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
-	if err != nil {
-		t.Fatalf("NewPinentryHandshake: %v", err)
-	}
-	prefix := handshake.Spec.Env["SEC_PREFIX"]
-	suffix := handshake.Spec.Env["SEC_SUFFIX"]
-
-	got, err := handshake.ValidateTTY(prefix + "/dev/pts/3" + suffix)
-	if err != nil || got != "/dev/pts/3" {
-		t.Errorf("ValidateTTY = %q, %v, want %q", got, err, "/dev/pts/3")
-	}
-	if _, err := handshake.ValidateTTY("/dev/pts/3"); err == nil {
-		t.Error("an unguarded tty must be rejected")
-	}
-}
-
-// The title is dropped and "--" separates a payload that could start with "-";
-// -d must stay away or the popup never takes the keyboard.
-func TestTmuxFloatingPane_PopupCommand_argvIsQuoted(t *testing.T) {
+// new-pane has no title flag, so the spec's title has nowhere to go.
+func TestTmuxFloatingPane_Launch_dropsTitle(t *testing.T) {
 	b := tmuxFloatingPaneBackend(t)
 
-	path, args := b.PopupCommand(runinpopup.PopupSpec{
+	_, args := b.tmux.NewPaneCommand(b.paneRequest(runinpopup.LaunchSpec{
 		Title:   "editor",
-		Env:     map[string]string{"B": "2", "A": "1"},
-		Command: []string{"vim", "my file.txt"},
-	})
-	assertPopupCommand(t, path, args, "/usr/bin/tmux", []string{
+		Command: []string{"true"},
+	}))
+	if slices.Contains(args, "-T") || slices.Contains(args, "editor") {
+		t.Errorf("args = %#v, want the title dropped", args)
+	}
+}
+
+// The same geometry, on the flags new-pane has for it: the size on -x/-y and
+// the position on -X/-Y, which is not how display-popup spells either.
+func TestTmuxFloatingPane_Launch_geometry(t *testing.T) {
+	b := tmuxFloatingPaneBackend(t)
+
+	path, args := b.tmux.NewPaneCommand(b.paneRequest(launchSpec(runinpopup.PopupSpec{
+		X:       "C",
+		Y:       "10",
+		Width:   "80%",
+		Height:  "20",
+		Command: []string{"htop"},
+	})))
+	assertCommand(t, path, args, "/usr/bin/tmux", []string{
 		"new-pane",
 		"-t", "work",
-		"-e", "A=1",
-		"-e", "B=2",
-		"--", `'vim' 'my file.txt'`,
+		"-P", "-F", "#{pane_id}",
+		"-X", "C",
+		"-Y", "10",
+		"-x", "80%",
+		"-y", "20",
+		"--", `'htop'`,
 	})
-	if slices.Contains(args, "-d") {
-		t.Error("-d would leave the focus outside the popup")
-	}
 }
 
-func TestTmuxFloatingPane_PopupCommand_noSession(t *testing.T) {
-	b, err := NewTmuxFloatingPane(Options{TMUX: "/tmp/tmux-1000/default,1,0"})
-	if err != nil {
-		t.Fatalf("NewTmuxFloatingPane: %v", err)
-	}
-	path, args := b.PopupCommand(runinpopup.PopupSpec{Command: []string{"true"}})
-	assertPopupCommand(t, path, args, "tmux", []string{"new-pane", "--", `'true'`})
-}
-
-func TestTmuxFloatingPane_Environ(t *testing.T) {
-	meta := "/run/user/1000/tmux-1000/default,111,0"
-
-	if got := tmuxFloatingPaneBackend(t).Environ(); !slices.Equal(got, []string{"TMUX=" + meta}) {
-		t.Errorf("Environ = %#v, want TMUX set from the session meta", got)
-	}
-
-	inside, err := NewTmuxFloatingPane(Options{SessionMeta: meta, TMUX: "/other,2,0"})
-	if err != nil {
-		t.Fatalf("NewTmuxFloatingPane: %v", err)
-	}
-	if got := inside.Environ(); got != nil {
-		t.Errorf("Environ = %#v, want nil when $TMUX is already set", got)
-	}
-}
-
-func TestTmuxAffectedByZoomCrash(t *testing.T) {
-	for _, tc := range []struct {
-		version string
-		want    bool
-		why     string
-	}{
-		{"tmux 3.7b", true, "the version that crashes"},
-		{"tmux 3.7b\n", true, "tmux -V output ends in a newline"},
-		{"tmux 3.7", true, "no suffix sorts before 3.7a"},
-		{"tmux 3.7a", true, ""},
-		{"tmux 3.7c", false, "the fix"},
-		{"tmux 3.7d", false, ""},
-		{"tmux 3.6", true, ""},
-		{"tmux 2.9a", true, "floating panes did not exist; the popup fails on its own"},
-		{"tmux 3.8", false, ""},
-		{"tmux 3.10", false, "the minor is compared as a number, not as text"},
-		{"tmux 4.0", false, ""},
-		{"tmux next-3.8", true, "a dev build's version pins no commit, so it cannot show the fix"},
-		{"tmux master", true, "unparseable"},
-		{"3.7c", true, `the "tmux " prefix is part of the contract`},
-		{"tmux 3.7.1", true, "not a release form tmux prints"},
-		{"tmux 3.", true, "unparseable"},
-		{"tmux ", true, "unparseable"},
-		{"", true, "no output at all"},
-		{"garbage", true, "unparseable"},
-	} {
-		t.Run(tc.version, func(t *testing.T) {
-			if got := tmuxAffectedByZoomCrash(tc.version); got != tc.want {
-				t.Errorf("tmuxAffectedByZoomCrash(%q) = %v, want %v (%s)",
-					tc.version, got, tc.want, tc.why)
-			}
-		})
-	}
-}
-
-func TestZellij_PopupCommand_pinentryHandshake(t *testing.T) {
+func TestZellij_Launch_ttyHandshake(t *testing.T) {
 	b := zellijBackend(t)
 
-	handshake, err := b.NewPinentryHandshake("/tmp/popup/tty", "/tmp/popup/done")
+	handshake, err := b.NewTTYHandshake("/tmp/popup/tty", "/tmp/popup/done")
 	if err != nil {
-		t.Fatalf("NewPinentryHandshake: %v", err)
+		t.Fatalf("NewTTYHandshake: %v", err)
 	}
 	if handshake.ValidateTTY != nil {
 		t.Error("zellij announces its tty unguarded; ValidateTTY must stay nil")
 	}
 
-	path, args := b.PopupCommand(handshake.Spec)
-	assertPopupCommand(t, path, args, "/usr/bin/zellij", []string{
+	req, err := b.runRequest(launchSpec(handshake.Spec))
+	if err != nil {
+		t.Fatalf("runRequest: %v", err)
+	}
+	path, args := b.zellij.RunCommand(req)
+	assertCommand(t, path, args, "/usr/bin/zellij", []string{
 		"--session=session-id",
 		"run",
 		"--name=pinentry-curses",
@@ -349,49 +336,117 @@ func TestZellij_PopupCommand_pinentryHandshake(t *testing.T) {
 	})
 }
 
-func TestZellij_PopupCommand_argvRunsDirectly(t *testing.T) {
+// The environment is what a "zellij run" argv must not carry: it travels over
+// a FIFO in the launch's work directory instead, and the command line names
+// only the FIFO the payload sources.
+func TestZellij_Launch_envTravelsOverAWorkDirFifo(t *testing.T) {
 	b := zellijBackend(t)
+	dir := t.TempDir()
 
-	path, args := b.PopupCommand(runinpopup.PopupSpec{Command: []string{"vim", "my file.txt"}})
-	assertPopupCommand(t, path, args, "/usr/bin/zellij", []string{
-		"--session=session-id",
-		"run",
-		"--floating",
-		"--close-on-exit",
-		"--pinned=true",
-		"--",
-		"vim",
-		"my file.txt",
-	})
-}
-
-func TestZellij_PopupCommand_envGoesThroughShell(t *testing.T) {
-	b := zellijBackend(t)
-
-	path, args := b.PopupCommand(runinpopup.PopupSpec{
+	req, err := b.runRequest(runinpopup.LaunchSpec{
+		Title:   "editor",
 		Env:     map[string]string{"B": "two", "A": "it's one"},
-		Command: []string{"env"},
+		Command: []string{"vim", "my file.txt"},
+		WorkDir: dir,
 	})
-	assertPopupCommand(t, path, args, "/usr/bin/zellij", []string{
+	if err != nil {
+		t.Fatalf("runRequest: %v", err)
+	}
+
+	path, args := b.zellij.RunCommand(req)
+	assertCommand(t, path, args, "/usr/bin/zellij", []string{
 		"--session=session-id",
 		"run",
+		"--name=editor",
 		"--floating",
 		"--close-on-exit",
 		"--pinned=true",
 		"--",
 		"/bin/bash",
 		"-c",
-		`export A='it'\''s one'; export B='two'; 'env'`,
+		". '" + filepath.Join(dir, "env") + "' && { 'vim' 'my file.txt'\n}",
 	})
-}
-
-func TestZellij_Environ(t *testing.T) {
-	if got := zellijBackend(t).Environ(); got != nil {
-		t.Errorf("Environ = %#v, want nil", got)
+	for _, arg := range args {
+		if strings.Contains(arg, "it's one") {
+			t.Fatalf("args = %#v, want no environment value in them", args)
+		}
 	}
 }
 
-// Listed explicitly rather than ranging over BackendNames: tmux-floating-pane is
+// Cells and percentages are as much zellij's vocabulary as tmux's, so they
+// travel the whole way.
+func TestZellij_Launch_geometry(t *testing.T) {
+	b := zellijBackend(t)
+
+	req, err := b.runRequest(launchSpec(runinpopup.PopupSpec{
+		X:       "10",
+		Y:       "5%",
+		Width:   "80%",
+		Height:  "20",
+		Command: []string{"htop"},
+	}))
+	if err != nil {
+		t.Fatalf("runRequest: %v", err)
+	}
+	path, args := b.zellij.RunCommand(req)
+	assertCommand(t, path, args, "/usr/bin/zellij", []string{
+		"--session=session-id",
+		"run",
+		"--x=10",
+		"--y=5%",
+		"--width=80%",
+		"--height=20",
+		"--floating",
+		"--close-on-exit",
+		"--pinned=true",
+		"--",
+		"htop",
+	})
+}
+
+// A tmux position specifier has no zellij equivalent, and placing the pane
+// somewhere else instead would be a silent answer to a request nobody can
+// honor. Both position fields have to say so, and say which value they mean.
+func TestZellij_Launch_rejectsTmuxPositions(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		spec  runinpopup.PopupSpec
+		value string
+	}{
+		{name: "x", spec: runinpopup.PopupSpec{X: "C"}, value: "C"},
+		{name: "y", spec: runinpopup.PopupSpec{Y: "M"}, value: "M"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.spec.Command = []string{"htop"}
+
+			_, err := zellijBackend(t).runRequest(launchSpec(tc.spec))
+			if err == nil {
+				t.Fatal("runRequest must fail: zellij cannot be asked for a tmux position")
+			}
+			if !strings.Contains(err.Error(), NameZellij) {
+				t.Errorf("err = %v, want the backend named in it", err)
+			}
+			if !strings.Contains(err.Error(), tc.value) {
+				t.Errorf("err = %v, want the value %q quoted in it", err, tc.value)
+			}
+		})
+	}
+}
+
+// The file has nowhere to go without the directory, and a launch that carries an
+// environment is given one; running the payload without its environment would
+// be the worse answer.
+func TestZellij_Launch_envNeedsAWorkDir(t *testing.T) {
+	_, err := zellijBackend(t).runRequest(runinpopup.LaunchSpec{
+		Env:     map[string]string{"A": "one"},
+		Command: []string{"true"},
+	})
+	if err == nil {
+		t.Fatal("runRequest must fail: there is nowhere to write the environment")
+	}
+}
+
+// Listed explicitly rather than ranging over Names: tmux-floating-pane is
 // the one backend whose Prepare does something, and execs tmux to find out.
 func TestBackendPrepare_isNoOp(t *testing.T) {
 	for _, b := range []runinpopup.Backend{tmuxBackend(t), zellijBackend(t)} {
@@ -418,8 +473,8 @@ func TestNew(t *testing.T) {
 		if b.Name() != name {
 			t.Errorf("New(%q).Name() = %q", name, b.Name())
 		}
-		if _, ok := b.(runinpopup.PinentryHandshaker); !ok {
-			t.Errorf("backend %q does not implement PinentryHandshaker", name)
+		if _, ok := b.(runinpopup.TTYHandshaker); !ok {
+			t.Errorf("backend %q does not implement TTYHandshaker", name)
 		}
 	}
 

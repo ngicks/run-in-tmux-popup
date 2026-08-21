@@ -26,10 +26,12 @@ type Options struct {
 	Shell string
 }
 
+// Backend names. They name the popup *mechanism*, not the multiplexer: tmux has
+// two, and they are separate names rather than variants of one another.
 const (
-	NameTmuxPopup        = runinpopup.BackendTmuxPopup
-	NameTmuxFloatingPane = runinpopup.BackendTmuxFloatingPane
-	NameZellij           = runinpopup.BackendZellij
+	NameTmuxPopup        = "tmux-popup"
+	NameTmuxFloatingPane = "tmux-floating-pane"
+	NameZellij           = "zellij"
 )
 
 // New builds the named backend.
@@ -44,26 +46,48 @@ func New(name string, opts Options) (runinpopup.Backend, error) {
 	default:
 		return nil, fmt.Errorf(
 			"unknown popup backend %q: valid values are %s",
-			name, strings.Join(runinpopup.BackendNames(), ", "),
+			name, strings.Join(Names(), ", "),
 		)
 	}
 }
 
-// Names lists every name accepted by New.
-func Names() []string { return runinpopup.BackendNames() }
-
-// DetectName selects a backend from the caller's ambient multiplexer hints.
-func DetectName(userDataKind, tmuxEnv, zellijEnv string) (string, error) {
-	return runinpopup.DetectBackendName(userDataKind, tmuxEnv, zellijEnv)
+// Names lists every name accepted by New, in the order reported to users.
+func Names() []string {
+	return []string{NameTmuxPopup, NameTmuxFloatingPane, NameZellij}
 }
 
-func commandLine(spec runinpopup.PopupSpec) string {
-	if spec.Script != "" {
-		return spec.Script
+// DetectName picks a backend name from ambient hints, for callers that
+// were not told which backend to use. Every hint is passed in — the caller
+// reads the environment, the detection itself stays pure:
+//
+//   - userDataKind is runinpopup.PinentryUserData.Kind, the most specific hint
+//     since the gpg-agent wrapper script picked it deliberately. A "_DEBUG"
+//     suffix does not change the mechanism, so the kind is matched by prefix.
+//   - tmuxEnv is $TMUX and zellijEnv is $ZELLIJ, checked in that order. A bare
+//     $TMUX names the multiplexer, not one of its two popup mechanisms, and
+//     resolves to NameTmuxPopup: display-popup is the older, unconditionally
+//     safe one, so floating panes stay an explicit choice.
+//
+// It returns an error naming the valid backends when nothing matches.
+func DetectName(userDataKind, tmuxEnv, zellijEnv string) (string, error) {
+	switch kind := strings.ToUpper(strings.TrimSpace(userDataKind)); {
+	case strings.HasPrefix(kind, "TMUX_POPUP"):
+		return NameTmuxPopup, nil
+	case strings.HasPrefix(kind, "TMUX_FLOATING_PANE"):
+		return NameTmuxFloatingPane, nil
+	case strings.HasPrefix(kind, "ZELLIJ_POPUP"):
+		return NameZellij, nil
 	}
-	quoted := make([]string, len(spec.Command))
-	for i, arg := range spec.Command {
-		quoted[i] = shellQuote(arg)
+	switch {
+	case tmuxEnv != "":
+		return NameTmuxPopup, nil
+	case zellijEnv != "":
+		return NameZellij, nil
 	}
-	return strings.Join(quoted, " ")
+	return "", fmt.Errorf(
+		"cannot detect the popup backend:"+
+			" neither PINENTRY_USER_DATA, $TMUX nor $ZELLIJ names one;"+
+			" select it explicitly, valid values are %s",
+		strings.Join(Names(), ", "),
+	)
 }

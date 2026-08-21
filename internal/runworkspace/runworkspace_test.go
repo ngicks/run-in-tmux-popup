@@ -1,6 +1,7 @@
 package runworkspace
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -13,46 +14,73 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func TestOpen_nonDebugKeepsFallbackAndRemovesDir(t *testing.T) {
+// tempDir points os.MkdirTemp at a directory of the test's own, so what a run
+// did or did not create is exactly what is in it.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	return dir
+}
+
+func TestOpen_nonDebugCreatesTheDirectoryAndCloseRemovesIt(t *testing.T) {
+	tempDir(t)
 	fallback := discardLogger()
 
-	w, err := Open("runworkspace-test-*", false, fallback)
+	w, err := Open("runworkspace-test-", false, fallback)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
+	}
+	dir := w.Options.Dir
+	if dir == "" {
+		t.Fatal("Options.Dir must be set: every run's directory is made here, up front")
+	}
+	if base := filepath.Base(dir); !strings.HasPrefix(base, "runworkspace-test-") {
+		t.Errorf("dir base = %q, want the prefix applied", base)
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		t.Fatalf("Stat(%q) = %v, %v, want the directory to exist before the launch", dir, fi, err)
 	}
 	if w.Logger != fallback {
 		t.Error("Logger must be the fallback when the run is not a debug one")
 	}
-	if fi, err := os.Stat(w.Dir); err != nil || !fi.IsDir() {
-		t.Fatalf("Stat(%q) = %v, %v: want an existing directory", w.Dir, fi, err)
+	// Whatever the launch left in it goes with it.
+	if err := os.WriteFile(filepath.Join(dir, "fifo-stand-in"), nil, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
-	if entries, err := os.ReadDir(w.Dir); err != nil || len(entries) != 0 {
-		t.Errorf("dir holds %v (err %v), want no log file outside a debug run", entries, err)
+	if err := w.Close(); err != nil {
+		t.Errorf("Close = %v, want nil", err)
 	}
-
-	w.Close()
-	if _, err := os.Stat(w.Dir); !os.IsNotExist(err) {
-		t.Errorf("Stat(%q) after Close = %v, want the directory removed", w.Dir, err)
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Stat(%q) after Close = %v, want an ordinary run's directory removed", dir, err)
 	}
 }
 
 func TestOpen_debugLogsToFileAndKeepsDir(t *testing.T) {
+	tempDir(t)
 	fallback := discardLogger()
 
-	w, err := Open("runworkspace-test-*", true, fallback)
+	w, err := Open("runworkspace-test-", true, fallback)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	// Close keeps a debug directory on purpose, so the test owns the cleanup.
-	t.Cleanup(func() { _ = os.RemoveAll(w.Dir) })
-
+	dir := w.Options.Dir
+	if dir == "" {
+		t.Fatal("Options.Dir must be set: a debug run hands the launch a directory it already made")
+	}
+	if base := filepath.Base(dir); !strings.HasPrefix(base, "runworkspace-test-") {
+		t.Errorf("dir base = %q, want the prefix applied", base)
+	}
 	if w.Logger == fallback {
 		t.Error("Logger must not be the fallback in a debug run")
 	}
-	w.Logger.Debug("hello", slog.String("key", "value"))
-	w.Close()
 
-	logPath := filepath.Join(w.Dir, "log.txt")
+	w.Logger.Debug("hello", slog.String("key", "value"))
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	logPath := filepath.Join(dir, logFileName)
 	fi, err := os.Stat(logPath)
 	if err != nil {
 		t.Fatalf("Stat(%q): %v", logPath, err)
@@ -68,19 +96,44 @@ func TestOpen_debugLogsToFileAndKeepsDir(t *testing.T) {
 	if !strings.Contains(string(b), "hello") || !strings.Contains(string(b), "key=value") {
 		t.Errorf("log = %q, want the debug record", b)
 	}
-	if _, err := os.Stat(w.Dir); err != nil {
-		t.Errorf("Stat(%q) after Close = %v, want a debug run to keep its directory", w.Dir, err)
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("Stat(%q) after Close = %v, want a debug run to keep its directory", dir, err)
 	}
 }
 
-func TestOpen_prefixNamesTheDir(t *testing.T) {
-	w, err := Open("runworkspace-prefix-test-*", false, discardLogger())
+func TestOpen_debugLogFailureTakesTheDirectoryWithIt(t *testing.T) {
+	tmp := tempDir(t)
+	wantErr := errors.New("no log file for you")
+	openFile = func(string, int, os.FileMode) (*os.File, error) { return nil, wantErr }
+	t.Cleanup(func() { openFile = os.OpenFile })
+
+	w, err := Open("runworkspace-test-", true, discardLogger())
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Open = %v, %v, want the log file's error", w, err)
+	}
+	if entries, err := os.ReadDir(tmp); err != nil || len(entries) != 0 {
+		t.Errorf(
+			"temp dir holds %v (err %v), want the created directory removed again",
+			entries,
+			err,
+		)
+	}
+}
+
+func TestClose_reportsTheLogFileFailure(t *testing.T) {
+	tempDir(t)
+
+	w, err := Open("runworkspace-test-", true, discardLogger())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer w.Close()
+	// Closed behind Close's back, which is the one failure it can be made to
+	// hit without a filesystem that refuses the flush.
+	if err := w.logFile.Close(); err != nil {
+		t.Fatalf("closing the log file: %v", err)
+	}
 
-	if base := filepath.Base(w.Dir); !strings.HasPrefix(base, "runworkspace-prefix-test-") {
-		t.Errorf("dir base = %q, want the prefix applied", base)
+	if err := w.Close(); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("Close = %v, want the log file's own error reported", err)
 	}
 }

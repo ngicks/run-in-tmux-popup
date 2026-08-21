@@ -41,7 +41,7 @@ func TestPinentryFlagOverrides(t *testing.T) {
 		{
 			name: "only the changed flag overlays",
 			argv: []string{"--backend=zellij"},
-			want: runinpopup.PartialConfig{DefaultBackend: ptr("zellij")},
+			want: runinpopup.PartialConfig{Backend: ptr("zellij")},
 		},
 		{
 			name: "pinentry alone",
@@ -52,14 +52,14 @@ func TestPinentryFlagOverrides(t *testing.T) {
 			name: "both",
 			argv: []string{"--backend", "tmux-popup", "--pinentry", "/opt/pinentry"},
 			want: runinpopup.PartialConfig{
-				DefaultBackend: ptr("tmux-popup"),
-				PinentryPath:   ptr("/opt/pinentry"),
+				Backend:      ptr("tmux-popup"),
+				PinentryPath: ptr("/opt/pinentry"),
 			},
 		},
 		{
 			name: "an explicitly empty flag is a value, not an absence",
 			argv: []string{"--backend="},
-			want: runinpopup.PartialConfig{DefaultBackend: ptr("")},
+			want: runinpopup.PartialConfig{Backend: ptr("")},
 		},
 		{
 			name: "trailing pinentry args do not set anything",
@@ -71,7 +71,7 @@ func TestPinentryFlagOverrides(t *testing.T) {
 			cmd, backend, pinentry := parsePinentryFlags(t, tc.argv)
 
 			got := pinentryFlagOverrides(cmd, backend, pinentry)
-			assertStringPtr(t, "DefaultBackend", got.DefaultBackend, tc.want.DefaultBackend)
+			assertStringPtr(t, "Backend", got.Backend, tc.want.Backend)
 			assertStringPtr(t, "PinentryPath", got.PinentryPath, tc.want.PinentryPath)
 			if got.Timeouts != (runinpopup.PartialTimeoutsConfig{}) {
 				t.Errorf("Timeouts = %+v, want the zero partial: no flag feeds it", got.Timeouts)
@@ -84,7 +84,7 @@ func TestPinentryFlagOverrides(t *testing.T) {
 // absent leaves the lower layer, explicit empty overwrites it — are asserted on
 // the merged result too.
 func TestPinentryFlagOverrides_apply(t *testing.T) {
-	base := runinpopup.Config{PinentryPath: "/from/config", DefaultBackend: "tmux-popup"}
+	base := runinpopup.Config{PinentryPath: "/from/config", Backend: "tmux-popup"}
 
 	cmd, backend, pinentry := parsePinentryFlags(t, nil)
 	if got := pinentryFlagOverrides(cmd, backend, pinentry).Apply(base); got != base {
@@ -93,8 +93,8 @@ func TestPinentryFlagOverrides_apply(t *testing.T) {
 
 	cmd, backend, pinentry = parsePinentryFlags(t, []string{"--backend="})
 	got := pinentryFlagOverrides(cmd, backend, pinentry).Apply(base)
-	if got.DefaultBackend != "" {
-		t.Errorf("DefaultBackend = %q, want the explicit empty flag to win", got.DefaultBackend)
+	if got.Backend != "" {
+		t.Errorf("Backend = %q, want the explicit empty flag to win", got.Backend)
 	}
 	if got.PinentryPath != base.PinentryPath {
 		t.Errorf("PinentryPath = %q, want %q", got.PinentryPath, base.PinentryPath)

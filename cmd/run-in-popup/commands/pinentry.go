@@ -1,7 +1,7 @@
 package commands
 
 import (
-	"cmp"
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -10,7 +10,7 @@ import (
 
 	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
-	"github.com/ngicks/run-in-tmux-popup/runinpopup/backend"
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/cli"
 )
 
 const pinentryLong = `pinentry proxies the Assuan exchange gpg-agent runs over stdin/stdout to a
@@ -27,10 +27,14 @@ KIND is "TMUX_POPUP", "TMUX_FLOATING_PANE" or "ZELLIJ_POPUP"; a "_DEBUG" suffix
 additionally writes a debug log to log.txt in the temporary directory and keeps
 that directory around.
 
---backend wins over the configured default_backend, which in turn wins over
+--backend wins over the configured backend, which in turn wins over
 auto-detection from PINENTRY_USER_DATA, then $TMUX (which selects tmux-popup;
 tmux floating panes stay an explicit choice), then $ZELLIJ. Arguments after "--"
 are passed to the pinentry binary unchanged.`
+
+// pinentryWorkspacePrefix names the directory holding one prompt's handshake
+// FIFOs, and its debug log when the run has one.
+const pinentryWorkspacePrefix = "run-in-popup-pinentry-"
 
 const pinentryExample = `  run-in-popup pinentry
   run-in-popup pinentry --backend zellij
@@ -58,8 +62,7 @@ func pinentryCmd(parent *cobra.Command, flagConfig *string) {
 		&flagBackend,
 		"backend",
 		"",
-		`popup backend, "tmux-popup", "tmux-floating-pane" or "zellij"`+
-			` (default: auto-detected)`,
+		fmt.Sprintf("popup backend, %s (default: auto-detected)", cli.BackendNameList()),
 	)
 	cmd.Flags().StringVar(
 		&flagPinentry,
@@ -85,60 +88,50 @@ func runPinentry(
 	cmd *cobra.Command,
 	args []string,
 	flagConfig, flagBackend, flagPinentry string,
-) error {
+) (err error) {
 	ctx := cmd.Context()
 
 	cfg, err := runinpopup.LoadConfig(flagConfig)
 	if err != nil {
 		return err
 	}
-	cfg = pinentryFlagOverrides(cmd, flagBackend, flagPinentry).Apply(cfg)
 
-	userData := runinpopup.ParsePinentryUserData(os.Getenv("PINENTRY_USER_DATA"))
-
-	backendName := cfg.DefaultBackend
-	if backendName == "" {
-		backendName, err = backend.DetectName(
-			userData.Kind,
-			os.Getenv("TMUX"),
-			os.Getenv("ZELLIJ"),
-		)
-		if err != nil {
-			return err
-		}
-	}
-	popupBackend, err := backend.New(backendName, backend.Options{
-		BinaryPath:  userData.Path,
-		SessionId:   userData.SessionId,
-		ClientId:    userData.ClientId,
-		SessionMeta: userData.SessionMeta,
-		TMUX:        os.Getenv("TMUX"),
-		// $SHELL rather than the library's "sh": the popup payload is the user's
-		// login shell in every released version of this tool.
-		Shell: cmp.Or(os.Getenv("SHELL"), "bash"),
-	})
+	rt, err := resolveRuntime(runtimeInputs{
+		Config:    cfg,
+		Overrides: pinentryFlagOverrides(cmd, flagBackend, flagPinentry),
+	}, os.Environ())
 	if err != nil {
 		return err
 	}
 
 	workspace, err := runworkspace.Open(
-		"run-in-popup-pinentry-*",
-		userData.Debug(),
+		pinentryWorkspacePrefix,
+		rt.UserData.Debug(),
 		contextkey.ValueSlogLoggerFallback(ctx, slog.Default()),
 	)
 	if err != nil {
 		return err
 	}
-	defer workspace.Close()
-	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", userData))
+	defer func() {
+		// A debug log that would not close is worth reporting, but never worth
+		// hiding how the exchange itself went.
+		if cerr := workspace.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", rt.UserData))
 
-	return runinpopup.CallPinentry(ctx, popupBackend, runinpopup.PinentryOptions{
-		Logger:       workspace.Logger,
-		TempDir:      workspace.Dir,
-		PinentryPath: cfg.PinentryPath,
+	pinentry := &runinpopup.PinentryLauncher{
+		Popup: &runinpopup.PopupLauncher{
+			Backend:   rt.Backend,
+			Logger:    workspace.Logger,
+			Workspace: workspace.Options,
+		},
+		PinentryPath: rt.Config.PinentryPath,
 		PinentryArgs: args,
-		Timeouts:     cfg.Timeouts,
-	})
+		Timeouts:     rt.Config.Timeouts,
+	}
+	return pinentry.Call(ctx)
 }
 
 // pinentryFlagOverrides turns explicitly-set flags into the topmost config
@@ -147,7 +140,7 @@ func runPinentry(
 func pinentryFlagOverrides(cmd *cobra.Command, backend, pinentry string) runinpopup.PartialConfig {
 	var p runinpopup.PartialConfig
 	if cmd.Flags().Changed("backend") {
-		p.DefaultBackend = &backend
+		p.Backend = &backend
 	}
 	if cmd.Flags().Changed("pinentry") {
 		p.PinentryPath = &pinentry

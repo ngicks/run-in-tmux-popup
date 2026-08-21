@@ -10,9 +10,10 @@ import (
 )
 
 // configLongFmt documents the resolved-config shape so users can write --format
-// templates without reading the source. The %s is filled with the shared
-// template-helper docs (cli.TemplateFuncHelp). Keep the field list in sync with
-// Config — it is a site on the add-a-field checklist.
+// templates without reading the source. Its three %s are filled, in order, with
+// the config schema tree (cli.ConfigSchemaHelp), the supported backend names
+// (cli.BackendNameList) and the template-helper docs (cli.TemplateFuncHelp), so
+// no field, backend or helper can go missing here.
 const configLongFmt = `config loads every layer (defaults < file < environment), applies any
 explicitly-set flags on top, and prints the fully-resolved configuration. With
 no flags it prints indented JSON; with --format it renders a Go text/template
@@ -21,17 +22,11 @@ against the config value instead.
 The value passed to --format has this shape (Go field name, type, JSON key);
 nesting is shown as a tree so deep configs stay readable:
 
-  Config
-  ├─ .PinentryPath    string       # pinentry binary     (pinentry_path)
-  ├─ .DefaultBackend  string       # backend to use      (default_backend)
-  └─ .Timeouts                     # handshake timeouts  (timeouts)
-      ├─ .Overall    time.Duration #   whole exchange    (timeouts.overall)
-      ├─ .TTYRead    time.Duration #   read popup tty    (timeouts.tty_read)
-      └─ .DoneWrite  time.Duration #   signal popup done (timeouts.done_write)
-
-DefaultBackend is "tmux-popup", "zellij", or empty to auto-detect from the
-environment. Durations print as nanosecond counts in JSON; the environment
-layer accepts Go duration strings (RUN_IN_POPUP_TIMEOUTS_OVERALL=2m).
+%s
+Valid Backend values are %s;
+empty auto-detects from the environment. Durations print as nanosecond counts
+in JSON; the environment layer accepts Go duration strings
+(RUN_IN_POPUP_TIMEOUTS_OVERALL=2m).
 
 Use the Go field names in --format (e.g. {{.PinentryPath}}, or
 {{.Timeouts.Overall}} for a nested field); the default JSON output uses the
@@ -48,9 +43,14 @@ func configCmd(parent *cobra.Command, flagConfig *string) {
 	var flagFormat string
 
 	cmd := &cobra.Command{
-		Use:               "config",
-		Short:             "Print the resolved configuration",
-		Long:              fmt.Sprintf(configLongFmt, cli.TemplateFuncHelp()),
+		Use:   "config",
+		Short: "Print the resolved configuration",
+		Long: fmt.Sprintf(
+			configLongFmt,
+			cli.ConfigSchemaHelp(),
+			cli.BackendNameList(),
+			cli.TemplateFuncHelp(),
+		),
 		Example:           configExample,
 		Args:              cobra.NoArgs,
 		ValidArgsFunction: cobra.NoFileCompletions,

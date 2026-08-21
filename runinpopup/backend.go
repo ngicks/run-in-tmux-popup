@@ -2,33 +2,54 @@ package runinpopup
 
 import (
 	"context"
-	"fmt"
-	"strings"
+	"io"
+	"time"
 )
-
-// Backend names. They name the popup *mechanism*, not the multiplexer: tmux has
-// two, and they are separate names rather than variants of one another.
-const (
-	BackendTmuxPopup        = "tmux-popup"
-	BackendTmuxFloatingPane = "tmux-floating-pane"
-	BackendZellij           = "zellij"
-)
-
-// BackendNames lists every known backend name in the order reported to users.
-func BackendNames() []string {
-	return []string{BackendTmuxPopup, BackendTmuxFloatingPane, BackendZellij}
-}
 
 // PopupSpec is the payload a popup runs: what to execute, with which
-// environment, under which title. Backends translate it into their own argv.
+// environment, under which title. It is a template — it holds no stream and no
+// per-launch state, so one spec can open any number of popups.
 type PopupSpec struct {
 	// Title names the popup window (tmux: -T) or pane (zellij: --name). Empty
 	// leaves the backend's default.
 	Title string
 	// Env is injected into the popup process (tmux: -e KEY=VALUE; zellij has no
-	// such flag, so its backend exports them from the shell it wraps the payload
-	// in). Map iteration order never reaches the argv: backends sort by key.
+	// such flag, so its backend writes the values into the launch's work
+	// directory and has the payload source them). Map iteration order never
+	// reaches the argv: backends sort by key.
 	Env map[string]string
+	// X, Y, Width and Height place and size the popup, in the vocabulary tmux's
+	// display-popup takes: a bare number is terminal cells and "N%" a percentage
+	// of the terminal. Empty leaves the backend's own placement, and a field left
+	// empty puts nothing on a backend's command line.
+	//
+	// X and Y are the popup's top-left corner on every backend. Backends whose
+	// mechanism says the same thing get the values as they were written; tmux's
+	// display-popup, which places a popup by its bottom edge instead, has the
+	// height added to Y on its way to the command line. That translation needs a
+	// height to add: on the tmux-popup backend a numeric or percentage Y with no
+	// Height, or with a Height in the other unit, fails the launch rather than
+	// putting the popup somewhere the caller did not ask for. Either way tmux
+	// still clamps a popup that would fall outside the terminal.
+	//
+	// X and Y additionally take tmux's single-letter position specifiers, which
+	// reach tmux untranslated:
+	//
+	//	C  the centre of the terminal
+	//	R  the right side of the terminal (X only)
+	//	P  the bottom left of the pane
+	//	M  the mouse position
+	//	W  the window position on the status line
+	//	S  the line above or below the status line (Y only)
+	//
+	// Which axis a specifier suits is tmux's own rule and tmux's to enforce: all
+	// six are accepted here for both. zellij has no equivalent for any of them —
+	// its backend refuses a specifier rather than guessing at one — while cells
+	// and percentages reach every backend.
+	//
+	// A malformed value fails the launch before a popup is opened, so a typo
+	// costs nothing but the error naming it.
+	X, Y, Width, Height string
 	// Command is the argv executed inside the popup. Backends whose popup
 	// mechanism only accepts a shell command line quote and join it.
 	Command []string
@@ -39,32 +60,110 @@ type PopupSpec struct {
 	Script string
 }
 
-// shellCommandLine renders the spec's payload as a single shell command line,
-// for backends that cannot take an argv.
-func (s PopupSpec) shellCommandLine() string {
-	if s.Script != "" {
-		return s.Script
-	}
-	return shellJoin(s.Command)
+// LaunchSpec is what a backend opens a popup for: one completed launch, built
+// by PopupLauncher from a PopupSpec template. Its command line is final —
+// whatever attaches the payload's streams is already in it — so a backend
+// translates it into its mechanism's argv and starts it, nothing else.
+type LaunchSpec struct {
+	// Title, Env, X, Y, Width, Height, Command and Script carry the same meaning
+	// as their PopupSpec counterparts. Each value has been validated on its own by
+	// the time a backend sees it, so what is left is what only the backend knows:
+	// translating the geometry into its mechanism's flags and coordinates, or
+	// refusing what that mechanism cannot be asked for — a value it has no
+	// equivalent for, or a combination it cannot place.
+	Title               string
+	Env                 map[string]string
+	X, Y, Width, Height string
+	Command             []string
+	Script              string
+
+	// StartupTimeout bounds how long the popup has to reach its payload. It is
+	// the same bound the launch layer holds its FIFO rendezvous to, handed down
+	// so a backend needing a rendezvous of its own — zellij's environment
+	// delivery — answers to one clock. Always set by the launch layer.
+	StartupTimeout time.Duration
+
+	// WorkDir is the launch's private mode-0700 scratch directory, present
+	// whenever the launch has one: it already holds the payload FIFOs named in
+	// the command line above, and a backend needing a file of its own puts it
+	// here. The launch gives the directory back when it is over — which, on a
+	// mechanism whose launcher returns at pane creation, can be before the
+	// payload has started. So whatever the payload must still find here needs a
+	// rendezvous holding the launch open until the payload has it: the output
+	// FIFOs have theirs by construction — stdin's relay is deliberately never
+	// waited on, see PopupStreams — and a backend adding a startup file of its
+	// own arranges its own rendezvous, the way zellij delivers its environment
+	// over a FIFO whose delivery its handle's Wait joins.
+	WorkDir string
+
+	// Stdin, Stdout and Stderr are the endpoints the payload's streams of those
+	// names are connected to for this launch, nil meaning the stream was not
+	// allocated one and stays on the popup's terminal.
+	//
+	// Backends do no piping: the multiplexer runs the payload, not this process,
+	// so the launch layer connects these endpoints to the FIFOs it has already
+	// written into the command line above, and a backend that cannot hand a
+	// payload its stdio directly simply ignores them. The launcher process's own
+	// output is not here at all — it is internal diagnostics, and belongs to
+	// whoever runs the launcher.
+	Stdin  io.ReadCloser
+	Stdout io.WriteCloser
+	Stderr io.WriteCloser
+}
+
+// PopupHandle is a launched popup: whoever launched it waits on it, and closes
+// it when the launch is given up on. Nothing else is on it — connecting a
+// payload's stdio is the same work for every mechanism, so it lives in the
+// launch layer instead of in each backend.
+type PopupHandle interface {
+	// Wait waits for the popup launcher to exit and reports why it failed.
+	//
+	// The launcher exiting is not the payload finishing: tmux display-popup
+	// stays for as long as the popup, but the floating-pane mechanisms return as
+	// soon as the pane exists.
+	Wait() error
+	// Dismiss closes the popup and whatever is running inside it.
+	//
+	// It is what canceling a launch has to mean. The launcher process is not the
+	// popup: interrupting it detaches the client that was displaying one, or
+	// reaps a command that returned the moment the pane existed, and either way
+	// the popup and the payload in it stay where they were. So the popup is
+	// closed through the multiplexer itself.
+	//
+	// ctx bounds the dismissal and is never the launch's own context — that one
+	// is canceled by the time a dismissal is wanted, and a close command
+	// inheriting it would never reach the multiplexer.
+	//
+	// Whoever asks for this is already giving up on the launch, so it is answered
+	// best-effort. It is done once per handle however often it is called, and the
+	// popup being gone already is nothing this package invents an error for —
+	// though a multiplexer that complains it cannot find what it was asked to
+	// close is reported as it answered, as is a dismissal that could not be
+	// carried out at all: a multiplexer that could not be reached, or a popup
+	// whose id never arrived to name it. Callers log what comes back rather than
+	// failing on it; the launch is ending on its own cancellation, not on this.
+	Dismiss(ctx context.Context) error
 }
 
 // Backend opens a popup in a terminal multiplexer. Implementations hold the
 // coordinates of the multiplexer they talk to (binary path, session, client)
 // and are safe to reuse for several popups.
 type Backend interface {
-	// Name reports the backend's name, one of BackendNames.
+	// Name reports the backend's name, one of the names defined by the backend
+	// package.
 	Name() string
-	// PopupCommand returns the argv that opens a popup executing spec. It only
-	// builds the command line — nothing is executed, so it is cheap and testable.
-	PopupCommand(spec PopupSpec) (path string, args []string)
-	// Environ returns "KEY=VALUE" adjustments the popup command needs on top of
-	// the current process environment (tmux-popup needs $TMUX set from the
-	// session meta, or the popup never appears), or nil when it needs none.
-	Environ() []string
+	// Launch opens a popup running spec and returns the handle on it. Canceling
+	// ctx tears the launcher down; closing the popup itself is the handle's
+	// Dismiss, which is what the launch layer calls on a canceled launch.
+	Launch(ctx context.Context, spec LaunchSpec) (PopupHandle, error)
 	// Prepare adjusts multiplexer state that would break — or crash — popup
-	// creation, and returns a func restoring that state once the popup is gone.
-	// Both may be no-ops: a nil restore means "nothing to undo", and is the
-	// normal result for backends that need no adjustment.
+	// creation, and returns a func restoring that state once the launch is
+	// released. That is not the popup being gone: no caller waits for the popup
+	// first, and on the floating-pane mechanisms — whose launcher returns the
+	// moment the pane exists — restore can well run while the popup still
+	// lives, so an implementation must tolerate that. Both may be no-ops: a nil
+	// restore means "nothing to undo", and is the normal result for backends
+	// that need no adjustment.
 	//
 	// tmux-floating-pane is the one implementation: it works around the tmux 3.7b
 	// crash on creating a floating pane while a pane is zoomed, under the
@@ -72,58 +171,10 @@ type Backend interface {
 	//   - Version-gated: de-zoom only on tmux versions affected by the bug
 	//     (< 3.7c). An unparseable version counts as affected — a spurious
 	//     de-zoom is flicker, a missed one takes down the tmux server.
-	//   - Restore is best-effort: callers run it after the popup closes, with a
-	//     context that outlives the popup's cancellation, and log its error
-	//     rather than failing the run.
+	//   - Restore is best-effort: callers run it when the launch is released —
+	//     possibly while the pane still lives, where re-zooming un-floats the
+	//     pane into the layout rather than crashing — with a context that
+	//     outlives the popup's cancellation, and log its error rather than
+	//     failing the run.
 	Prepare(ctx context.Context) (restore func(context.Context) error, err error)
-}
-
-// DetectBackendName picks a backend name from ambient hints, for callers that
-// were not told which backend to use. Every hint is passed in — the caller
-// reads the environment, the detection itself stays pure:
-//
-//   - userDataKind is PinentryUserData.Kind, the most specific hint since the
-//     gpg-agent wrapper script picked it deliberately. A "_DEBUG" suffix does
-//     not change the mechanism, so the kind is matched by prefix.
-//   - tmuxEnv is $TMUX and zellijEnv is $ZELLIJ, checked in that order. A bare
-//     $TMUX names the multiplexer, not one of its two popup mechanisms, and
-//     resolves to BackendTmuxPopup: display-popup is the older, unconditionally
-//     safe one, so floating panes stay an explicit choice.
-//
-// It returns an error naming the valid backends when nothing matches.
-func DetectBackendName(userDataKind, tmuxEnv, zellijEnv string) (string, error) {
-	switch kind := strings.ToUpper(strings.TrimSpace(userDataKind)); {
-	case strings.HasPrefix(kind, "TMUX_POPUP"):
-		return BackendTmuxPopup, nil
-	case strings.HasPrefix(kind, "TMUX_FLOATING_PANE"):
-		return BackendTmuxFloatingPane, nil
-	case strings.HasPrefix(kind, "ZELLIJ_POPUP"):
-		return BackendZellij, nil
-	}
-	switch {
-	case tmuxEnv != "":
-		return BackendTmuxPopup, nil
-	case zellijEnv != "":
-		return BackendZellij, nil
-	}
-	return "", fmt.Errorf(
-		"cannot detect the popup backend:"+
-			" neither PINENTRY_USER_DATA, $TMUX nor $ZELLIJ names one;"+
-			" select it explicitly, valid values are %s",
-		strings.Join(BackendNames(), ", "),
-	)
-}
-
-// shellQuote renders s as a single POSIX shell word.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// shellJoin renders an argv as a shell command line that executes it unchanged.
-func shellJoin(args []string) string {
-	quoted := make([]string, len(args))
-	for i, a := range args {
-		quoted[i] = shellQuote(a)
-	}
-	return strings.Join(quoted, " ")
 }

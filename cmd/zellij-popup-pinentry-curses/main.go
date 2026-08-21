@@ -10,70 +10,31 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 
-	"github.com/ngicks/run-in-tmux-popup/internal/runworkspace"
+	"github.com/ngicks/run-in-tmux-popup/internal/legacyshim"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
 	"github.com/ngicks/run-in-tmux-popup/runinpopup/backend"
 )
 
-const deprecationNotice = "zellij-popup-pinentry-curses is deprecated;" +
-	` run "run-in-popup pinentry --backend zellij" instead.`
-
 func main() {
-	// stderr only: stdout carries the Assuan exchange with gpg-agent, and any
-	// stray byte there breaks the protocol.
-	fmt.Fprintln(os.Stderr, deprecationNotice)
-	if err := run(); err != nil {
+	shim := legacyshim.Shim{
+		Name:            "zellij-popup-pinentry-curses",
+		Replacement:     "run-in-popup pinentry --backend zellij",
+		UserDataFormat:  "ZELLIJ_POPUP:zellij_path:session_id:client_id",
+		WorkspacePrefix: "zellij-popup-pinentry-curses-",
+		NewBackend: func(userData runinpopup.PinentryUserData) (runinpopup.Backend, error) {
+			return backend.NewZellij(backend.Options{
+				BinaryPath: userData.Path,
+				SessionId:  userData.SessionId,
+				// bash where the backend would default to sh: this binary has always
+				// fallen back to it, and that is what it stays compatible with.
+				Shell: cmp.Or(os.Getenv("SHELL"), "bash"),
+			})
+		},
+	}
+	if err := shim.Run(context.Background(), os.Args[1:], os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-}
-
-func run() error {
-	ctx, stop := signal.NotifyContext(
-		context.Background(),
-		syscall.SIGINT, syscall.SIGTERM, syscall.SIGABRT,
-	)
-	defer stop()
-
-	userData := runinpopup.ParsePinentryUserData(os.Getenv("PINENTRY_USER_DATA"))
-	if userData.Path == "" || userData.SessionId == "" {
-		return fmt.Errorf(
-			"environment variable %q must be formatted as"+
-				" \"ZELLIJ_POPUP:zellij_path:session_id:client_id\" but is %q",
-			"PINENTRY_USER_DATA", os.Getenv("PINENTRY_USER_DATA"),
-		)
-	}
-
-	popupBackend, err := backend.NewZellij(backend.Options{
-		BinaryPath: userData.Path,
-		SessionId:  userData.SessionId,
-		Shell:      cmp.Or(os.Getenv("SHELL"), "bash"),
-	})
-	if err != nil {
-		return err
-	}
-
-	workspace, err := runworkspace.Open(
-		"zellij-popup-pinentry-curses-*",
-		// TMUX_POPUP_DEBUG, not a zellij-specific name: this binary shared its
-		// startup code with the tmux one and users' setups know that variable.
-		userData.Debug() || os.Getenv("TMUX_POPUP_DEBUG") == "1",
-		slog.New(slog.NewTextHandler(os.Stderr, nil)),
-	)
-	if err != nil {
-		return err
-	}
-	defer workspace.Close()
-	workspace.Logger.Info("PINENTRY_USER_DATA", slog.Any("data", userData))
-
-	return runinpopup.CallPinentry(ctx, popupBackend, runinpopup.PinentryOptions{
-		Logger:       workspace.Logger,
-		TempDir:      workspace.Dir,
-		PinentryArgs: os.Args[1:],
-	})
 }

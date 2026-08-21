@@ -1,25 +1,23 @@
 package backend
 
 import (
-	"cmp"
 	"context"
+	"errors"
 	"fmt"
-	"maps"
-	"slices"
-	"strings"
 
 	"github.com/ngicks/run-in-tmux-popup/runinpopup"
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/geometry"
+	"github.com/ngicks/run-in-tmux-popup/runinpopup/internal/zellij"
 )
 
-var _ runinpopup.PinentryHandshaker = (*Zellij)(nil)
+var _ runinpopup.TTYHandshaker = (*Zellij)(nil)
 
 // Zellij opens popups as zellij floating panes ("zellij run
 // --floating"). zellij addresses sessions, not clients, so there is no client
 // targeting here.
 type Zellij struct {
-	zellijPath string
-	sessionId  string
-	shell      string
+	zellij    *zellij.Client
+	sessionId string
 }
 
 // NewZellij builds the "zellij" backend. It uses BinaryPath (default
@@ -28,9 +26,11 @@ type Zellij struct {
 // the environment.
 func NewZellij(opts Options) (*Zellij, error) {
 	return &Zellij{
-		zellijPath: cmp.Or(opts.BinaryPath, "zellij"),
-		sessionId:  opts.SessionId,
-		shell:      cmp.Or(opts.Shell, "sh"),
+		zellij: zellij.New(zellij.Options{
+			Path:  opts.BinaryPath,
+			Shell: opts.Shell,
+		}),
+		sessionId: opts.SessionId,
 	}, nil
 }
 
@@ -38,38 +38,65 @@ func (b *Zellij) Name() string {
 	return NameZellij
 }
 
-// PopupCommand builds "zellij --session=<id> run [--name=<title>] --floating
-// --close-on-exit --pinned=true -- <payload>". zellij runs the payload argv
-// directly, so a script payload — or an env injection, for which zellij has no
-// flag — is wrapped in a shell.
-func (b *Zellij) PopupCommand(spec runinpopup.PopupSpec) (string, []string) {
-	var args []string
-	if b.sessionId != "" {
-		args = append(args, "--session="+b.sessionId)
+// Launch opens the spec as a floating pane in this backend's session. zellij
+// takes the session as a flag, so the launcher needs no environment of its own.
+func (b *Zellij) Launch(
+	ctx context.Context,
+	spec runinpopup.LaunchSpec,
+) (runinpopup.PopupHandle, error) {
+	req, err := b.runRequest(spec)
+	if err != nil {
+		return nil, err
 	}
-	args = append(args, "run")
-	if spec.Title != "" {
-		args = append(args, "--name="+spec.Title)
-	}
-	args = append(args, "--floating", "--close-on-exit", "--pinned=true", "--")
-	return b.zellijPath, append(args, b.payload(spec)...)
+	return b.zellij.StartRun(ctx, req)
 }
 
-func (b *Zellij) payload(spec runinpopup.PopupSpec) []string {
-	if spec.Script == "" && len(spec.Env) == 0 {
-		return slices.Clone(spec.Command)
+// runRequest completes the launch into a zellij run, placing what does not fit
+// in the argv beside it: "zellij run" has no environment flag, and an argv is
+// readable by every process for as long as the pane lives, so an environment is
+// delivered over a FIFO in the launch's work directory and sourced by the
+// payload — the zellij client owns that delivery, since it also owns the
+// launcher whose Wait has to join it.
+func (b *Zellij) runRequest(spec runinpopup.LaunchSpec) (zellij.RunRequest, error) {
+	if err := rejectTmuxPositions(spec); err != nil {
+		return zellij.RunRequest{}, err
 	}
-	var sb strings.Builder
-	for _, k := range slices.Sorted(maps.Keys(spec.Env)) {
-		fmt.Fprintf(&sb, "export %s=%s; ", k, shellQuote(spec.Env[k]))
+	if len(spec.Env) > 0 && spec.WorkDir == "" {
+		return zellij.RunRequest{}, errors.New(
+			"the launch has no work directory to deliver the popup environment in",
+		)
 	}
-	sb.WriteString(commandLine(spec))
-	return []string{b.shell, "-c", sb.String()}
+	return zellij.RunRequest{
+		SessionId:      b.sessionId,
+		Title:          spec.Title,
+		Env:            spec.Env,
+		WorkDir:        spec.WorkDir,
+		StartupTimeout: spec.StartupTimeout,
+		X:              spec.X,
+		Y:              spec.Y,
+		Width:          spec.Width,
+		Height:         spec.Height,
+		Command:        spec.Command,
+		Script:         spec.Script,
+	}, nil
 }
 
-// Environ returns nil: zellij takes the session as a flag, so the popup command
-// needs no environment of its own.
-func (b *Zellij) Environ() []string {
+// rejectTmuxPositions refuses the popup positions zellij cannot express. Cells
+// and percentages are its own vocabulary too, but the single-letter specifiers
+// are tmux's alone — "the centre of the terminal" is not something "zellij run"
+// can be asked for — and a pane placed at a guessed position instead is worse
+// than one that never opened. Only X and Y are looked at: a specifier is the
+// one value the size fields cannot hold, and the launch layer has already said
+// so by the time a request is built.
+func rejectTmuxPositions(spec runinpopup.LaunchSpec) error {
+	for _, value := range []string{spec.X, spec.Y} {
+		if geometry.IsPosition(value) {
+			return fmt.Errorf(
+				"backend %s: position %q is tmux-specific; use cells or a percentage",
+				NameZellij, value,
+			)
+		}
+	}
 	return nil
 }
 
@@ -79,25 +106,21 @@ func (b *Zellij) Prepare(_ context.Context) (func(context.Context) error, error)
 	return nil, nil
 }
 
-// zellijPinentryPaneName is the floating pane's name during the pinentry
-// handshake, unchanged from cmd/zellij-popup-pinentry-curses so the argv this
-// package builds stays identical to the one that binary shipped.
-const zellijPinentryPaneName = "pinentry-curses"
+// zellijHandshakePaneName is the floating pane's name during the handshake. It
+// still reads "pinentry-curses" — the name cmd/zellij-popup-pinentry-curses
+// shipped — so the argv this package builds stays identical to that binary's.
+const zellijHandshakePaneName = "pinentry-curses"
 
-// NewPinentryHandshake announces the tty unguarded: "zellij run" has no env
-// injection flag, so a prefix/suffix secret would have to travel in the argv,
-// where any process on the machine can read it — the guard would be theater.
-func (b *Zellij) NewPinentryHandshake(
+// NewTTYHandshake announces the tty as-is. The FIFO paths travel in the argv
+// itself: "zellij run" has no env injection flag, and a path is not what the
+// sourced environment FIFO exists to keep out of a command line.
+func (b *Zellij) NewTTYHandshake(
 	ttyFifo, doneFifo string,
-) (runinpopup.PinentryHandshake, error) {
-	return runinpopup.PinentryHandshake{
+) (runinpopup.TTYHandshake, error) {
+	return runinpopup.TTYHandshake{
 		Spec: runinpopup.PopupSpec{
-			Title:  zellijPinentryPaneName,
+			Title:  zellijHandshakePaneName,
 			Script: fmt.Sprintf("echo $(tty) >> %s && read done < %s", ttyFifo, doneFifo),
 		},
 	}, nil
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

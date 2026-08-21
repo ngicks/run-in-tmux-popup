@@ -27,5 +27,7 @@ dependencies:
     - git: github.com/ngicks/agents-package
       path: skills/go-review-checklist
     - git: github.com/ngicks/agents-package
+      path: skills/ngcommit
+    - git: github.com/ngicks/agents-package
       path: skills/ngplan
   mcp: []
