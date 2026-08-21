@@ -167,28 +167,39 @@ func (e *pinentryExchange) run(ctx context.Context) (err error) {
 	e.logger.Debug("pinentry started", slog.String("tty", tty))
 
 	relay := new(errgroup.Group)
-	relay.Go(func() error { return rewriteAssuanTTY(e.input, pinentryInput, tty) })
+	relay.Go(func() error {
+		defer pinentryInput.Close()
+		return rewriteAssuanTTY(e.input, pinentryInput, tty)
+	})
 
 	waitErr := e.pinentry.wait()
 	e.logger.Debug("pinentry finished", slog.Any("err", waitErr))
 
-	// gpg-agent keeps its end of the input open for the whole session, so the
-	// relay ends when this end is closed, not when the sender stops. Whatever it
-	// reports afterwards is that closure, and says nothing about how the exchange
-	// went.
+	// Pinentry may exit while gpg-agent still holds its end of the input open.
+	// Closing this derived end releases the relay in that case; the resulting
+	// closed-pipe or cancellation error only records that teardown. Any other
+	// relay failure ended the exchange on its own and is worth reporting.
 	if cerr := e.input.Close(); cerr != nil {
 		e.logger.Debug("closing the assuan input", slog.Any("err", cerr))
 	}
-	if rerr := relay.Wait(); rerr != nil {
+	rerr := relay.Wait()
+	if rerr != nil {
 		e.logger.Debug("assuan relay ended", slog.Any("err", rerr))
 	}
-	return waitErr
+	rerr = relayFailure(rerr)
+	if errors.Is(rerr, io.ErrClosedPipe) ||
+		errors.Is(rerr, context.Canceled) ||
+		errors.Is(rerr, context.DeadlineExceeded) {
+		rerr = nil
+	}
+	return cmp.Or(waitErr, rerr)
 }
 
 // pinentryProcess is the pinentry binary the exchange drives.
 type pinentryProcess interface {
 	// start runs pinentry and returns the endpoint its Assuan input goes to.
-	// Canceling ctx ends the process.
+	// The caller closes the endpoint when the relayed input ends. Canceling ctx
+	// ends the process.
 	start(ctx context.Context) (io.WriteCloser, error)
 	// wait waits for it to exit and reports, naming the binary, how it failed. It
 	// also ends the input endpoint start handed out: a process that is gone has
