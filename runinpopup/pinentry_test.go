@@ -32,10 +32,11 @@ const fakePinentryCommand = "fake-pinentry"
 
 const (
 	// pinentryReadsUntilBye records the forwarded stream verbatim and exits on
-	// the line that ends a real Assuan exchange. Waiting for EOF instead would
-	// deadlock: os/exec closes the child's stdin only once Wait has seen it
-	// exit, and Wait is what the proxy is blocked on.
+	// the line that ends a real Assuan exchange.
 	pinentryReadsUntilBye = "read-until-bye"
+	// pinentryReadsUntilEOF records the forwarded stream verbatim and exits only
+	// once the proxy closes its Assuan input.
+	pinentryReadsUntilEOF = "read-until-eof"
 	// pinentryHangs never exits on its own, so only cancellation can end it.
 	pinentryHangs = "hang"
 )
@@ -71,7 +72,7 @@ func runFakePinentry() (int, bool) {
 	for {
 		line, err := r.ReadBytes('\n')
 		forwarded.Write(line)
-		if err != nil || bytes.Equal(line, []byte("BYE\n")) {
+		if err != nil || mode == pinentryReadsUntilBye && bytes.Equal(line, []byte("BYE\n")) {
 			break
 		}
 	}
@@ -341,6 +342,29 @@ func TestPinentryLauncher_Call_rewritesTheAnnouncedTTYIntoTheStream(t *testing.T
 	}
 }
 
+// Pinentry implementations may wait for EOF after the upstream Assuan stream
+// ends. The process wait is already running then, so relay completion must close
+// the child's stdin to let that wait finish and the popup be dismissed.
+func TestPinentryLauncher_Call_assuanEOFClosesPinentryInputAndDismissesPopup(t *testing.T) {
+	p := newPinentryProxy(t, pinentryReadsUntilEOF)
+	p.backend.script = announceThenExit
+	dismissal := watchDone(t, p.doneFifo)
+	p.feed(t, "GETPIN\n")
+	if err := p.stdin.Close(); err != nil {
+		t.Fatalf("closing the assuan stream: %v", err)
+	}
+
+	if err := p.launcher.Call(t.Context()); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if got := p.forwarded(t); got != "GETPIN\n" {
+		t.Errorf("forwarded %q, want %q", got, "GETPIN\n")
+	}
+	if got := dismissal(); got != "done\n" {
+		t.Errorf("done fifo carried %q, want %q", got, "done\n")
+	}
+}
+
 // Only a line that starts with the option, spelled exactly that way, is
 // rewritten; every near miss and everything else reaches pinentry as it came.
 func TestPinentryLauncher_Call_forwardsEverythingElseByteForByte(t *testing.T) {
@@ -568,7 +592,7 @@ func (f *fakeRendezvous) dismiss() error {
 
 // fakePinentry is a pinentry that never runs: it records the stream the
 // exchange rewrites into it and ends the wait on the line that ends a real
-// Assuan exchange, the way the binary does by exiting.
+// Assuan exchange or when its input is closed, the ways the binary exits.
 type fakePinentry struct {
 	startErr error
 	waitErr  error
@@ -613,7 +637,10 @@ func (f *fakePinentry) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func (f *fakePinentry) Close() error { return nil }
+func (f *fakePinentry) Close() error {
+	f.seeBye()
+	return nil
+}
 
 func (f *fakePinentry) forwarded() string {
 	f.mu.Lock()
@@ -651,6 +678,35 @@ func TestPinentryExchange_run(t *testing.T) {
 		want := "OPTION ttyname=" + popupTTY + "\nBYE\n"
 		if got := pinentry.forwarded(); got != want {
 			t.Errorf("forwarded %q, want %q", got, want)
+		}
+		if rendezvous.dismissed != 1 {
+			t.Errorf("dismissed %d times, want exactly one", rendezvous.dismissed)
+		}
+	})
+
+	t.Run("a relay failure is reported", func(t *testing.T) {
+		relayErr := errors.New("the assuan input failed")
+		rendezvous := &fakeRendezvous{tty: popupTTY}
+		pinentry := newFakePinentry()
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- newExchange(
+				rendezvous,
+				pinentry,
+				io.NopCloser(errReader{relayErr}),
+			).run(t.Context())
+		}()
+
+		var err error
+		select {
+		case err = <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("run never returned after the relay failed")
+		}
+
+		if !errors.Is(err, relayErr) {
+			t.Fatalf("err = %v, want the relay failure %v", err, relayErr)
 		}
 		if rendezvous.dismissed != 1 {
 			t.Errorf("dismissed %d times, want exactly one", rendezvous.dismissed)
