@@ -129,8 +129,9 @@ func announceThenExit(ttyFifo, _ string) string {
 func staysSilent(_, _ string) string { return "sleep 5" }
 
 // pinentryProxy is one wired-up exchange: a popup that touches no multiplexer,
-// this test binary standing in for the pinentry executable, and pipes standing
-// in for the process stdio the proxy relays between.
+// this test binary standing in for the pinentry executable, a pipe standing in
+// for the Assuan input the proxy relays, and files standing in for the two
+// outputs, which are handed to the pinentry child as they are.
 type pinentryProxy struct {
 	dir        string
 	launcher   *PinentryLauncher

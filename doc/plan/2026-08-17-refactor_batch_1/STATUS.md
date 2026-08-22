@@ -12,9 +12,11 @@ conn to consume the endpoint waits); `launch.go` at 569 lines wants the
 same by-responsibility split `exec.go` got; nothing automates
 `go test -tags integration`; `JsonIpcConn` has no `CloseSend`; a
 SIGKILLed exec caller can leave the popup shell blocked in open(2);
-a live pinentry-curses smoke test on a real tmux host remains the one
-unverified confidence gap for the pinentry fd-topology change; README
-omits `config --format` and the `version` subcommand (pre-existing).
+README omits `config --format` and the `version` subcommand
+(pre-existing). The live pinentry-curses gap is closed: 2026-08-22
+brought `runinpopup/pinentry_live_test.go` (build tag `integration`),
+which runs a real pinentry-curses in a real tmux popup on a private
+server; still nothing automates the tagged runs.
 
 Step 1 landed 2026-08-18: six hermetic
 characterization tests for `callPinentry` (fake handshaking backend +
@@ -80,15 +82,27 @@ handling; `PinentryHandshake(r)` renamed `TTYHandshake(r)` per the
 recorded decision; `PinentryOptions`/`CallPinentry` deleted. Pinentry
 debug runs still get `runworkspace`'s dir + log.txt (handed to the
 launcher as caller-owned `Dir`); shims minimally ported. Notable
-deviations, documented in code: pinentry's stdout/stderr are now
+deviations, documented in code: pinentry's stdout/stderr were made
 os/exec pipes rather than inherited *os.File fds (Assuan bytes verified
-identical; a live pinentry-curses smoke test on a tmux host is the
-remaining confidence gap); cancellation is SIGINT + 2s grace instead of
-immediate SIGKILL; the seamed stdin is no longer closed by the library;
-per-line debug logs replaced by one `pinentry started` log naming the
-tty. Known iopipe quirk recorded in stdio.go: a Writer's completion
-channel can report nil for a failing write, so output failures surface
-through cmd.Wait, input failures through close().
+identical) — since amended, see below; cancellation is SIGINT + 2s grace
+instead of immediate SIGKILL; the seamed stdin is no longer closed by
+the library; per-line debug logs replaced by one `pinentry started` log
+naming the tty. An iopipe quirk was recorded in stdio.go at the time: a
+Writer's completion channel can report nil for a failing write, so
+output failures surfaced through cmd.Wait and input failures through
+close(). That note went away with the output relays it described.
+
+Amendment landed 2026-08-22 (recorded in DECISION.md): pinentry's
+stdout and stderr are handed to the child as real files again, so the
+child writes on the descriptor gpg-agent reads and this process is no
+longer the one writing to its own fd 1 and 2. The relayed shape let a
+gpg-agent that dropped the connection right after BYE break the pipe
+under the proxy, and the fatal SIGPIPE killed it before it could dismiss
+the popup — the popup then stayed on screen after the user had answered
+the prompt. Only the Assuan input keeps its iopipe controller, for the
+reason it was introduced: the exchange needs an end it may close on a
+read only gpg-agent can end. `processStdio` is `assuanInput`
+accordingly.
 
 Steps 6 and 7 landed 2026-08-18 (parallel workers, disjoint files).
 Step 7: `exec.go`/`exec_test.go` split into

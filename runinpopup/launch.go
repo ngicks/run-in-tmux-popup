@@ -393,8 +393,8 @@ type PopupCommand struct {
 	// hasEndpoints says the endpoints group has streams to wait for, which is
 	// what WaitStreams has a verdict by.
 	hasEndpoints bool
-	stdoutPipe       io.ReadCloser
-	stderrPipe       io.ReadCloser
+	stdoutPipe   io.ReadCloser
+	stderrPipe   io.ReadCloser
 	// release dismisses the popup and gives back everything the launch took. It
 	// runs exactly once, however the command ends.
 	release func()
