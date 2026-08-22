@@ -42,11 +42,12 @@ type PinentryLauncher struct {
 	// DefaultConfig().Timeouts.
 	Timeouts TimeoutsConfig
 
-	// The process stdio the proxy relays between, nil meaning os.Stdin, os.Stdout
-	// and os.Stderr. Unexported because a caller has nothing to gain from
-	// redirecting them — gpg-agent speaks Assuan over this process's own stdio and
-	// nowhere else; they exist so tests can drive the exchange without handing it
-	// the test runner's own streams.
+	// The process stdio the exchange runs on, nil meaning os.Stdin, os.Stdout and
+	// os.Stderr: the input is relayed through a pipe the exchange may close, the
+	// two outputs are handed to the pinentry child as they are. Unexported because
+	// a caller has nothing to gain from redirecting them — gpg-agent speaks Assuan
+	// over this process's own stdio and nowhere else; they exist so tests can drive
+	// the exchange without handing it the test runner's own streams.
 	stdin          io.Reader
 	stdout, stderr io.Writer
 }
@@ -89,19 +90,14 @@ func (l *PinentryLauncher) Call(ctx context.Context) (err error) {
 	// over one of them on the way out.
 	defer releaseWorkspace()
 
-	stdio, err := newProcessStdio(
-		ctx,
-		cmp.Or[io.Reader](l.stdin, os.Stdin),
-		cmp.Or[io.Writer](l.stdout, os.Stdout),
-		cmp.Or[io.Writer](l.stderr, os.Stderr),
-	)
+	input, err := newAssuanInput(ctx, cmp.Or[io.Reader](l.stdin, os.Stdin))
 	if err != nil {
 		return err
 	}
 	defer func() {
 		// A relay that ended because the exchange ended has nothing to add to what
 		// the exchange already reported.
-		if cerr := stdio.close(); err == nil {
+		if cerr := input.close(); err == nil {
 			err = cerr
 		}
 	}()
@@ -118,10 +114,10 @@ func (l *PinentryLauncher) Call(ctx context.Context) (err error) {
 		pinentry: &pinentryCommand{
 			path:   cmp.Or(l.PinentryPath, def.PinentryPath),
 			args:   l.PinentryArgs,
-			stdout: stdio.stdout,
-			stderr: stdio.stderr,
+			stdout: cmp.Or[io.Writer](l.stdout, os.Stdout),
+			stderr: cmp.Or[io.Writer](l.stderr, os.Stderr),
 		},
-		input:  stdio.stdin,
+		input:  input.end,
 		logger: logger,
 	}
 	return exchange.run(ctx)
@@ -221,6 +217,14 @@ type pinentryCommand struct {
 	// stdout and stderr are where pinentry's own output goes — this process's own
 	// stdout is the Assuan channel gpg-agent reads, so what pinentry answers has
 	// to arrive there unchanged.
+	//
+	// They are the endpoints themselves rather than anything wrapped around them,
+	// so os/exec hands the descriptors straight to the child when they are files,
+	// which is what they are whenever gpg-agent is on the other end. The child then
+	// answers on the very descriptor gpg-agent is reading: nothing in this process
+	// stands between the two, and a gpg-agent that has already hung up breaks the
+	// pipe under the pinentry it stopped listening to rather than under the proxy
+	// that still has a popup to dismiss.
 	stdout, stderr io.Writer
 
 	cmd *exec.Cmd
