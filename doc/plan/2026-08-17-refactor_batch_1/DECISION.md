@@ -45,6 +45,8 @@ coordinator consumes derived `io.ReadCloser`/`io.WriteCloser`. The library
 never closes `os.Stdin`/`os.Stdout` itself; every `Pipe` completion channel is
 consumed exactly once with the error-priority rules in `../refacotr.md`
 ("Adopt `github.com/ngicks/go-common/iopipe`" § Refactor).
+*(Narrowed to the input stream only; see the amendment at the end of this
+file.)*
 
 **Rationale:** Replaces an ad hoc `os.Pipe` plus an intentionally-unjoined
 `io.Copy` goroutine that closes process-global `os.Stdin` to unblock itself.
@@ -376,3 +378,44 @@ The user picked the rename: the exchange is a TTY rendezvous, not
 pinentry-specific, matching step 5's "backends name no pinentry-specific
 capability" gate. The rename joins the pre-1.0 break set; the delta
 block's omission is treated as an oversight, not a veto.
+
+## Amended: only the pinentry input is relayed; both outputs go back to the child (2026-08-22; narrows D3)
+
+D3 put a controller in front of all three of the proxy's own standard
+streams, and the pinentry child was given the derived ends. For the
+outputs that was wrong, and it kept a popup on screen after the user had
+already answered the prompt.
+
+What went wrong: with a relay in the middle, the process writing to the
+proxy's fd 1 and fd 2 was the proxy itself, copying what pinentry had
+written. gpg-agent's side of the connection says BYE and then drops both
+descriptors without waiting to be acknowledged, so the bytes pinentry
+writes after that land on a pipe with no reader. A broken pipe on fd 1 or
+fd 2 raises SIGPIPE, which is fatal by default — and it killed the proxy,
+the one process that still had a popup to dismiss and a workspace to
+clean up. The popup stayed until something else closed it.
+
+The amendment: the two output endpoints are handed to the pinentry child
+as they are, so os/exec passes the descriptors straight through whenever
+they are files, which they are whenever gpg-agent is on the other end.
+The child then answers on the very descriptor gpg-agent is reading, and a
+hang-up breaks the pipe under the pinentry that gpg-agent stopped
+listening to — a death the proxy is still alive to notice, report, and
+dismiss the popup after. Nothing in the proxy stands between the two, so
+the Assuan bytes are also no longer copied at all.
+
+The input keeps its controller, unchanged and for the reason D3 gave: the
+relay sits in a read on `os.Stdin` that only gpg-agent can end, so the
+exchange needs an end of its own it is allowed to close. No SIGPIPE
+concern arises there — nothing writes to fd 0.
+
+Consequences: `processStdio` becomes `assuanInput` (one derived end, one
+completion channel, no errgroup); `PinentryLauncher`'s unexported
+`stdout`/`stderr` seams are passed to the child rather than wrapped; and
+the iopipe writer quirk recorded alongside the old output relays is gone
+with them. Live coverage came with the change: `pinentry_live_test.go`,
+behind the `integration` build tag, drives a real pinentry-curses in a
+real tmux popup on a private server and asserts that both the popup and
+the proxy are gone shortly after the exchange ends — including the case
+where gpg-agent drops the connection right after BYE, which is the one
+that used to leave the popup behind.
